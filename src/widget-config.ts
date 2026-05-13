@@ -1,20 +1,31 @@
+export type WidgetKind = 'markdown' | 'canvas' | 'plugin';
+
 export interface WidgetConfig {
-  id: string;            // unique id for this widget instance
-  viewType: string;      // Obsidian view type string, e.g. "full-calendar-view"
-  label: string;         // Display title for the widget chrome
-  x: number;            // px from left of canvas
-  y: number;            // px from top of canvas
-  w: number;            // width in px
-  h: number;            // height in px
-  filePath?: string;    // filePath for markdown note view type
+  id: string;
+  kind: WidgetKind;
+  viewType: string;
+  label: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  filePath?: string;
+  pluginId?: string;
+  pluginState?: unknown;
 }
 
 export interface DashboardSettings {
   widgets: WidgetConfig[];
-  canvasBackground: string; // CSS color or "default"
+  canvasBackground: string;
+  zoom?: number;
+  panX?: number;
+  panY?: number;
 }
 
 export const DEFAULT_SETTINGS: DashboardSettings = {
   widgets: [],
   canvasBackground: 'default',
+  zoom: 1,
+  panX: 0,
+  panY: 0,
 };

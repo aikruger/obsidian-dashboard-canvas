@@ -23,6 +23,23 @@ export default class DashboardPlugin extends Plugin {
       },
     });
 
+    this.addCommand({
+      id: 'add-active-view-to-dashboard',
+      name: 'Add active view to dashboard canvas',
+      callback: () => {
+        console.debug('[Dashboard] add-active-view-to-dashboard command fired');
+        const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_DASHBOARD);
+        if (leaves.length === 0) {
+          console.warn('[Dashboard] Dashboard not open — open it first');
+          return;
+        }
+        const dashView = leaves[0]?.view as DashboardView;
+        if (dashView) {
+          dashView.addActiveViewToDashboard();
+        }
+      },
+    });
+
     this.addRibbonIcon('layout-dashboard', 'Open dashboard canvas', () => {
       this.activateDashboard().catch(console.error);
     });
@@ -32,8 +49,7 @@ export default class DashboardPlugin extends Plugin {
 
   onunload() {
     console.debug('[Dashboard] Plugin unloading — detaching all dashboard leaves');
-    // eslint-disable-next-line obsidianmd/detach-leaves
-    this.app.workspace.detachLeavesOfType(VIEW_TYPE_DASHBOARD);
+
   }
 
   async activateDashboard() {
