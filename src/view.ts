@@ -5,6 +5,7 @@ import { WidgetManager } from './widget-manager';
 import { LayoutManager } from './layout-manager';
 import { MarkdownFileSuggestModal } from './markdown-file-suggest';
 import { CanvasFileSuggestModal } from './canvas-file-suggest';
+import { BasesFileSuggestModal } from './bases-file-suggest';
 import { PluginViewSelectModal, PluginViewOption } from './plugin-view-select-modal';
 
 export const VIEW_TYPE_DASHBOARD = 'dashboard-canvas-view';
@@ -31,7 +32,11 @@ export class DashboardView extends ItemView {
   getIcon() { return 'layout-dashboard'; }
 
   async onOpen() {
-    console.debug('[Dashboard][View] onOpen — building dashboard');
+    console.debug('[Dashboard][View] onOpen — reloading settings from disk');
+    // Always re-read from data.json so we have the latest saved widgets
+    await this.plugin.loadSettings();
+    console.debug('[Dashboard][View] onOpen — widget count from disk:', this.plugin.settings.widgets.length);
+
     const container = this.containerEl.children[1] as HTMLElement;
     container.empty();
     container.classList.add('dashboard-container');
@@ -141,6 +146,7 @@ export class DashboardView extends ItemView {
     };
     this.plugin.settings.widgets.push(newConfig);
     await this.plugin.saveSettings();
+    console.debug('[Dashboard][View] addWidget: saved', this.plugin.settings.widgets.length, 'widgets to data.json');
     await this.renderWidget(newConfig);
   }
 
@@ -229,6 +235,14 @@ export class DashboardView extends ItemView {
     );
 
     menu.addItem(item =>
+      item.setTitle('Bases file...').setIcon('database').onClick(() => {
+        new BasesFileSuggestModal(this.app, (file) => {
+          this.addWidget('bases', 'bases', file.basename, file.path).catch(console.error);
+        }).open();
+      })
+    );
+
+    menu.addItem(item =>
       item.setTitle('Markdown note...').setIcon('file-text').onClick(() => {
         new MarkdownFileSuggestModal(this.app, (file) => {
           this.addWidget('markdown', 'markdown', file.basename, file.path).catch(console.error);
@@ -257,14 +271,67 @@ export class DashboardView extends ItemView {
   getPluginViewOptions(): PluginViewOption[] {
     const seen = new Set<string>();
     const results: PluginViewOption[] = [];
+
+    // --- Track 1: currently open leaves (gives us display text) ---
     this.app.workspace.iterateAllLeaves((leaf) => {
       const type = leaf.getViewState().type;
-      if (!seen.has(type) && type !== VIEW_TYPE_DASHBOARD && type !== 'markdown' && type !== 'canvas') {
+      if (
+        !seen.has(type) &&
+        type !== VIEW_TYPE_DASHBOARD &&
+        type !== 'markdown' &&
+        type !== 'canvas' &&
+        type !== 'empty'
+      ) {
         seen.add(type);
         results.push({ type, label: leaf.view?.getDisplayText?.() ?? type });
       }
     });
-    console.debug('[Dashboard][View] Available plugin view types:', results.map(r => r.type));
+
+    // --- Track 2: all view types registered by loaded plugins ---
+    // Plugins register views via app.viewRegistry internally
+    const viewRegistry = (this.app as unknown as {
+      viewRegistry?: { typeByExtension?: Record<string, unknown> }
+    }).viewRegistry;
+
+    if (viewRegistry?.typeByExtension) {
+      for (const type of Object.keys(viewRegistry.typeByExtension)) {
+        if (
+          !seen.has(type) &&
+          type !== VIEW_TYPE_DASHBOARD &&
+          type !== 'markdown' &&
+          type !== 'canvas' &&
+          type !== 'empty'
+        ) {
+          seen.add(type);
+          results.push({ type, label: type }); // no display text available without a live leaf
+        }
+      }
+    }
+
+    // --- Track 3: scan plugin instances for any registerView calls ---
+    // Some plugins don't appear in typeByExtension (they use registerView directly)
+    const plugins = (this.app as unknown as {
+      plugins?: { plugins?: Record<string, unknown> }
+    }).plugins?.plugins;
+
+    if (plugins) {
+      for (const pluginId of Object.keys(plugins)) {
+        const plugin = plugins[pluginId] as {
+          VIEW_TYPE?: string;
+          [key: string]: unknown;
+        };
+        // Heuristic: many plugins export a VIEW_TYPE constant on their main class
+        if (plugin.VIEW_TYPE && typeof plugin.VIEW_TYPE === 'string') {
+          const type = plugin.VIEW_TYPE;
+          if (!seen.has(type) && type !== VIEW_TYPE_DASHBOARD) {
+            seen.add(type);
+            results.push({ type, label: `${pluginId} (${type})` });
+          }
+        }
+      }
+    }
+
+    console.debug('[Dashboard][View] getPluginViewOptions — found', results.length, 'view types:', results.map(r => r.type));
     return results;
   }
 
@@ -339,8 +406,9 @@ export class DashboardView extends ItemView {
   }
 
   getState(): Record<string, unknown> {
+    // Only persist ephemeral view state (zoom/pan) in workspace.json
+    // Widgets are persisted separately via plugin.settings / data.json
     return {
-      widgets: this.plugin.settings.widgets,
       zoom: this.zoom,
       panX: this.panX,
       panY: this.panY,
@@ -348,15 +416,11 @@ export class DashboardView extends ItemView {
   }
 
   async setState(state: Record<string, unknown>, result: ViewStateResult): Promise<void> {
-    if (Array.isArray(state.widgets)) {
-      // Mutate in place to keep LayoutManager's reference valid
-      this.plugin.settings.widgets.length = 0;
-      this.plugin.settings.widgets.push(...state.widgets as WidgetConfig[]);
-      console.debug('[Dashboard][View] setState applied:', this.plugin.settings.widgets.length, 'widgets');
-    }
+    // Only restore zoom/pan from workspace state — never widgets
     if (typeof state.zoom === 'number') this.zoom = state.zoom;
     if (typeof state.panX === 'number') this.panX = state.panX;
     if (typeof state.panY === 'number') this.panY = state.panY;
+    console.debug('[Dashboard][View] setState: zoom/pan restored, widgets come from data.json');
     await super.setState(state, result);
   }
 }

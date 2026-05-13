@@ -51,14 +51,79 @@ export class WidgetManager {
       return leaf;
     }
 
+    // --- BASES ---
+    if (config.kind === 'bases' && config.filePath) {
+      const file = this.app.vault.getAbstractFileByPath(config.filePath);
+      if (!(file instanceof TFile)) {
+        console.warn(`[Dashboard][WidgetManager] Bases file not found: "${config.filePath}"`);
+        return null;
+      }
+      const leaf = workspace.getRightLeaf(false);
+      if (!leaf) {
+        console.warn('[Dashboard][WidgetManager] Could not get right sidebar leaf for bases');
+        return null;
+      }
+      await leaf.openFile(file);
+
+      // Wait for Bases view to initialise — it's async
+      let attempts = 0;
+      while (attempts < 10) {
+        const type = leaf.getViewState().type;
+        if (type === 'bases') {
+          console.debug(`[Dashboard][WidgetManager] Bases leaf ready after ${attempts * 100}ms, widget "${config.id}"`);
+          break;
+        }
+        console.debug(`[Dashboard][WidgetManager] Waiting for bases view on "${config.filePath}" (attempt ${attempts + 1})...`);
+        await new Promise(resolve => window.setTimeout(resolve, 100));
+        attempts++;
+      }
+
+      if (leaf.getViewState().type !== 'bases') {
+        console.warn(`[Dashboard][WidgetManager] Bases view never became ready for "${config.filePath}" — is Bases enabled?`);
+        leaf.detach();
+        return null;
+      }
+
+      this.ownedLeaves.add(config.id);
+      console.debug(`[Dashboard][WidgetManager] Bases leaf created for widget "${config.id}", file="${config.filePath}"`);
+      return leaf;
+    }
+
     // --- PLUGIN VIEW ---
     if (config.kind === 'plugin') {
       const leaf = workspace.getRightLeaf(false);
-      if (!leaf) { console.warn(`[Dashboard][WidgetManager] Could not get right sidebar leaf for plugin view "${config.viewType}"`); return null; }
+      if (!leaf) {
+        console.warn(`[Dashboard][WidgetManager] Could not get right sidebar leaf for plugin view "${config.viewType}"`);
+        return null;
+      }
       try {
-        await leaf.setViewState({ type: config.viewType, state: (config.pluginState ?? {}) as Record<string, unknown> });
+        await leaf.setViewState({
+          type: config.viewType,
+          state: (config.pluginState ?? {}) as Record<string, unknown>
+        });
+
+        // Wait for the view to finish initialising (some plugins are async in onOpen)
+        // Poll up to 10 times at 100ms intervals
+        let attempts = 0;
+        while (attempts < 10) {
+          const viewType = leaf.getViewState().type;
+          if (viewType === config.viewType) {
+            console.debug(`[Dashboard][WidgetManager] Plugin view "${config.viewType}" ready after ${attempts * 100}ms`);
+            break;
+          }
+          console.debug(`[Dashboard][WidgetManager] Waiting for "${config.viewType}" to initialise (attempt ${attempts + 1})...`);
+          await new Promise(resolve => window.setTimeout(resolve, 100));
+          attempts++;
+        }
+
+        if (leaf.getViewState().type !== config.viewType) {
+          console.warn(`[Dashboard][WidgetManager] Plugin view "${config.viewType}" never became ready — leaf type is "${leaf.getViewState().type}"`);
+          leaf.detach();
+          return null;
+        }
+
         this.ownedLeaves.add(config.id);
-        console.debug(`[Dashboard][WidgetManager] Plugin view leaf created for "${config.viewType}", widget "${config.id}"`);
+        console.debug(`[Dashboard][WidgetManager] Plugin view leaf ready for "${config.viewType}", widget "${config.id}"`);
         return leaf;
       } catch (err) {
         console.error(`[Dashboard][WidgetManager] setViewState failed for "${config.viewType}" (plugin not loaded?):`, err);

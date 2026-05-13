@@ -1,4 +1,4 @@
-export type WidgetKind = 'markdown' | 'canvas' | 'plugin';
+export type WidgetKind = 'markdown' | 'canvas' | 'bases' | 'plugin';
 
 export interface WidgetConfig {
   id: string;

@@ -24,8 +24,10 @@ export class PluginViewSelectModal extends SuggestModal<PluginViewOption> {
   }
 
   renderSuggestion(option: PluginViewOption, el: HTMLElement) {
-    el.createEl('div', { text: option.label });
-    el.createEl('small', { text: option.type, cls: 'dashboard-suggest-path' });
+    el.createEl('div', { text: option.label, cls: 'plugin-view-label' });
+    if (option.label !== option.type) {
+      el.createEl('div', { text: option.type, cls: 'plugin-view-type dashboard-suggest-path' });
+    }
   }
 
   onChooseSuggestion(option: PluginViewOption) {
