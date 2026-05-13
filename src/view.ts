@@ -77,7 +77,46 @@ export class DashboardView extends ItemView {
       await this.renderWidget(config);
     }
 
+    this.setupLayoutChangeGuard();
+
     console.debug('[Dashboard][View] onOpen complete —', this.plugin.settings.widgets.length, 'widgets rendered');
+  }
+
+  setupLayoutChangeGuard() {
+    console.debug('[Dashboard][View] Setting up layout-change guard');
+
+    this.registerEvent(
+      this.app.workspace.on('layout-change', () => {
+        console.debug('[Dashboard][View] layout-change fired — checking widget DOM integrity');
+
+        let reboundCount = 0;
+        for (const [widgetId, leaf] of this.widgetManager.hostedLeaves.entries()) {
+          const hostEl = this.canvasEl.querySelector(`[data-widget-id="${widgetId}"] .dashboard-widget-content`) as HTMLElement;
+          if (!hostEl) {
+            console.warn(`[Dashboard][View] No hostEl found for widget "${widgetId}" during layout-change guard`);
+            continue;
+          }
+
+          const isStillInHost = hostEl.contains((leaf as any).containerEl);
+          console.debug(`[Dashboard][View] layout-change guard: widget "${widgetId}" still in host: ${isStillInHost}`);
+
+          if (!isStillInHost) {
+            console.warn(`[Dashboard][View] ⚠️ Workspace reclaimed leaf for "${widgetId}" — re-mounting`);
+            // Attempt re-mount
+            const tabsWrapper = (leaf as any).containerEl.parentElement;
+            if (tabsWrapper) {
+              hostEl.appendChild(tabsWrapper);
+              reboundCount++;
+              console.debug(`[Dashboard][View] Re-mounted leaf for "${widgetId}"`);
+            }
+          }
+        }
+
+        if (reboundCount > 0) {
+          console.debug(`[Dashboard][View] Re-bound ${reboundCount} widgets after layout-change`);
+        }
+      })
+    );
   }
 
   // ─── WIDGET RENDERING ────────────────────────────────────────────────────
@@ -101,9 +140,14 @@ export class DashboardView extends ItemView {
     const contentFrame = slot.createDiv({ cls: 'dashboard-widget-content' });
 
     // Acquire leaf and mount
-    const leaf = await this.widgetManager.getOrCreateLeaf(config);
+    const leaf = await this.widgetManager.hostLeafInElement(config, contentFrame);
+    if (!leaf) {
+        // Fallback approach if hostLeafInElement fails
+        await this.widgetManager.fallbackRenderWidget(config, contentFrame);
+    }
+
     if (leaf) {
-      this.widgetManager.mountLeaf(leaf, contentFrame, config.id);
+      this.widgetManager.postMountDiagnostic(config.id, leaf, contentFrame, this.app);
       console.debug(`[Dashboard][View] Widget "${config.id}" leaf mounted successfully`);
     } else {
       const reason = !config.filePath && config.kind !== 'plugin'
@@ -152,7 +196,24 @@ export class DashboardView extends ItemView {
 
   async removeWidget(widgetId: string) {
     console.debug(`[Dashboard][View] removeWidget "${widgetId}"`);
-    this.widgetManager.restoreLeaf(widgetId);
+
+    const leaf = this.widgetManager.hostedLeaves.get(widgetId);
+    if (leaf) {
+      const wsAny = this.app.workspace as any;
+      const rootSplit = wsAny.rootSplit;
+
+      if (rootSplit && rootSplit.containerEl) {
+        const tabsWrapper = (leaf as any).containerEl.parentElement;
+        if (tabsWrapper) {
+          rootSplit.containerEl.appendChild(tabsWrapper);
+        } else {
+          leaf.detach();
+        }
+      }
+      this.widgetManager.hostedLeaves.delete(widgetId);
+      this.app.workspace.trigger('layout-change');
+    }
+
     this.canvasEl.querySelector(`[data-widget-id="${widgetId}"]`)?.remove();
     this.plugin.settings.widgets = this.plugin.settings.widgets.filter(w => w.id !== widgetId);
     await this.plugin.saveSettings();
