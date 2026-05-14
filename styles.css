@@ -144,6 +144,23 @@
   font-size: 11px;
 }
 
+/* Refresh button on each widget title bar */
+.dashboard-widget-refresh {
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 4px;
+  border-radius: 3px;
+  line-height: 1;
+  transition: color 120ms ease, transform 300ms ease;
+}
+.dashboard-widget-refresh:hover {
+  color: var(--text-normal);
+  transform: rotate(180deg);
+}
+
 /* ── Settings Tab ─────────────────────────────────────────────────────── */
 
 /* Section headings inside the settings tab */

@@ -133,6 +133,14 @@ export class DashboardView extends ItemView {
     const handle = titleBar.createDiv({ cls: 'dashboard-widget-handle' });
     handle.createEl('span', { text: '⠿', cls: 'dashboard-widget-drag-icon' });
     titleBar.createEl('span', { text: config.label, cls: 'dashboard-widget-label' });
+
+    const refreshBtn = titleBar.createEl('button', { text: '↺', cls: 'dashboard-widget-refresh' });
+    refreshBtn.title = 'Refresh widget';
+    refreshBtn.addEventListener('click', () => {
+      console.log(`[Dashboard][View] Refresh button clicked for widget "${config.id}"`);
+      this.refreshWidget(config.id);
+    });
+
     const closeBtn = titleBar.createEl('button', { text: '✕', cls: 'dashboard-widget-close' });
     closeBtn.addEventListener('click', () => { this.removeWidget(config.id).catch(console.error); });
 
@@ -173,6 +181,87 @@ export class DashboardView extends ItemView {
 
   // ─── ADD / REMOVE WIDGETS ────────────────────────────────────────────────
 
+
+  // ─── WIDGET REFRESH ──────────────────────────────────────────────────────
+
+  /**
+   * Refresh a single mounted widget.
+   * Fires onResize() on the leaf's view, dispatches a DOM resize event,
+   * and emits a workspace layout-change — these three signals cover the
+   * majority of plugin refresh paths (FullCalendar, Dataview, Tasks, etc.).
+   */
+  refreshWidget(widgetId: string): void {
+    console.log(`[Dashboard][View] refreshWidget called for "${widgetId}"`);
+
+    const record = this.widgetManager.getMounts().get(widgetId);
+    if (!record) {
+      console.warn(`[Dashboard][View] refreshWidget: no mount record for "${widgetId}"`);
+      return;
+    }
+
+    const leaf = record.leaf;
+    const view = leaf.view as any;
+
+    // 1. Call onResize() if the view implements it (FullCalendar, etc.)
+    if (typeof view?.onResize === 'function') {
+      try {
+        view.onResize();
+        console.log(`[Dashboard][View] refreshWidget: onResize() called on "${widgetId}"`);
+      } catch (err) {
+        console.error(`[Dashboard][View] refreshWidget: onResize() threw for "${widgetId}":`, err);
+      }
+    }
+
+    // 2. If it's a FullCalendar view, call calendar.updateSize() directly
+    //    FullCalendar stores its instance on view.calendar or view.fullCalendar
+    const calInstance = view?.calendar ?? view?.fullCalendar ?? view?.calendarEl?._calendar;
+    if (calInstance && typeof calInstance.updateSize === 'function') {
+      try {
+        calInstance.updateSize();
+        console.log(`[Dashboard][View] refreshWidget: FullCalendar.updateSize() called on "${widgetId}"`);
+      } catch (err) {
+        console.warn(`[Dashboard][View] refreshWidget: FullCalendar.updateSize() threw for "${widgetId}":`, err);
+      }
+    }
+    // Also try refetchEvents in case data is stale
+    if (calInstance && typeof calInstance.refetchEvents === 'function') {
+      try {
+        calInstance.refetchEvents();
+        console.log(`[Dashboard][View] refreshWidget: FullCalendar.refetchEvents() called on "${widgetId}"`);
+      } catch (err) {
+        console.warn(`[Dashboard][View] refreshWidget: FullCalendar.refetchEvents() threw for "${widgetId}":`, err);
+      }
+    }
+
+    // 3. Dispatch a native DOM resize event on the containerEl
+    //    — catches plugins that observe ResizeObserver or window 'resize'
+    try {
+      (leaf as any).containerEl.dispatchEvent(new Event('resize', { bubbles: true }));
+      console.log(`[Dashboard][View] refreshWidget: DOM resize event dispatched on "${widgetId}"`);
+    } catch (err) {
+      console.warn(`[Dashboard][View] refreshWidget: dispatchEvent threw for "${widgetId}":`, err);
+    }
+
+    // 4. Trigger workspace layout-change event
+    //    — catches plugins that watch (app.workspace as any).trigger('layout-change')
+    try {
+      (this.app.workspace as any).trigger('layout-change');
+      console.log(`[Dashboard][View] refreshWidget: workspace layout-change triggered for "${widgetId}"`);
+    } catch (err) {
+      console.warn(`[Dashboard][View] refreshWidget: workspace trigger threw for "${widgetId}":`, err);
+    }
+  }
+
+  /**
+   * Refresh ALL mounted widgets — callable from the toolbar
+   * and automatically on a 30-second interval if enabled.
+   */
+  refreshAllWidgets(): void {
+    console.log(`[Dashboard][View] refreshAllWidgets called — refreshing ${this.widgetManager.getMounts().size} widget(s)`);
+    for (const widgetId of this.widgetManager.getMounts().keys()) {
+      this.refreshWidget(widgetId);
+    }
+  }
 
   async removeWidget(widgetId: string) {
     console.debug(`[Dashboard][View] removeWidget "${widgetId}"`);
@@ -252,6 +341,13 @@ export class DashboardView extends ItemView {
     saveBtn.addEventListener('click', () => {
       this.plugin.saveSettings().catch(console.error);
       console.debug('[Dashboard][View] Layout manually saved');
+    });
+
+    const refreshAllBtn = toolbarEl.createEl('button', { text: '↺ Refresh all', cls: 'dashboard-toolbar-btn' });
+    refreshAllBtn.title = 'Force all widgets to re-render with latest data';
+    refreshAllBtn.addEventListener('click', () => {
+      console.log('[Dashboard][View] Refresh all widgets triggered from toolbar');
+      this.refreshAllWidgets();
     });
   }
 

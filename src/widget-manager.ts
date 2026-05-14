@@ -31,6 +31,7 @@ export interface MountRecord {
 export class WidgetManager {
   private app: App;
   private mounts: Map<string, MountRecord> = new Map();
+  private resizeObservers: Map<string, ResizeObserver> = new Map();
 
   constructor(app: App) {
     this.app = app;
@@ -160,6 +161,32 @@ export class WidgetManager {
 
     // ── Step 5: Store mount record ──
     this.mounts.set(widgetId, { leaf, originalParent, placeholder });
+
+    // ── Step 6: Attach ResizeObserver so the view re-renders on slot resize ──
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        console.log(`[Dashboard][WidgetManager] ResizeObserver fired for "${widgetId}", new size:`,
+          Math.round(entry.contentRect.width), 'x', Math.round(entry.contentRect.height));
+        // Call onResize on the leaf's view directly
+        const view = leaf.view as any;
+        if (typeof view?.onResize === 'function') {
+          try {
+            view.onResize();
+          } catch (err) {
+            console.warn(`[Dashboard][WidgetManager] ResizeObserver: onResize() threw for "${widgetId}":`, err);
+          }
+        }
+        // FullCalendar-specific
+        const cal = view?.calendar ?? view?.fullCalendar ?? view?.calendarEl?._calendar;
+        if (cal) {
+          try { cal.updateSize?.(); } catch {}
+        }
+      }
+    });
+    ro.observe(slotContentEl);
+    this.resizeObservers.set(widgetId, ro);
+    console.log(`[Dashboard][WidgetManager] ResizeObserver attached for "${widgetId}"`);
+
     console.debug(`[Dashboard][WidgetManager] mountLeaf complete for "${widgetId}"`);
     return true;
   }
@@ -169,6 +196,14 @@ export class WidgetManager {
   // ─────────────────────────────────────────────
   restoreLeaf(widgetId: string): void {
     console.debug(`[Dashboard][WidgetManager] restoreLeaf: widgetId="${widgetId}"`);
+
+    // Disconnect ResizeObserver
+    const ro = this.resizeObservers.get(widgetId);
+    if (ro) {
+      ro.disconnect();
+      this.resizeObservers.delete(widgetId);
+      console.log(`[Dashboard][WidgetManager] ResizeObserver disconnected for "${widgetId}"`);
+    }
 
     const record = this.mounts.get(widgetId);
     if (!record) {
