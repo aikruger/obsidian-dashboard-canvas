@@ -143,3 +143,29 @@
   display: block;
   font-size: 11px;
 }
+
+/* ── Settings Tab ─────────────────────────────────────────────────────── */
+
+/* Section headings inside the settings tab */
+.dashboard-settings h3 {
+  margin-top: 1.2em;
+  margin-bottom: 0.4em;
+  font-size: var(--font-ui-medium, 14px);
+  font-weight: 600;
+  color: var(--text-normal);
+  border-bottom: 1px solid var(--background-modifier-border);
+  padding-bottom: 4px;
+}
+
+/* Make the colour picker + reset button sit on one row */
+.dashboard-settings .setting-item-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Reset button sizing */
+.dashboard-settings .setting-item-control button {
+  font-size: 12px;
+  padding: 3px 10px;
+}

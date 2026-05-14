@@ -1,8 +1,9 @@
 // settings-tab.ts
 import { App, PluginSettingTab, Setting } from 'obsidian';
 import DashboardPlugin from './main';
-import { VIEW_TYPE_DASHBOARD } from './view';
-import { DashboardView } from './view';
+import { VIEW_TYPE_DASHBOARD, DashboardView } from './view';
+
+console.debug('[Dashboard][Settings] settings-tab.ts imported cleanly');
 
 export class DashboardSettingTab extends PluginSettingTab {
   plugin: DashboardPlugin;
@@ -16,7 +17,9 @@ export class DashboardSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
+    containerEl.addClass('dashboard-settings');
     containerEl.createEl('h2', { text: 'Dashboard Canvas Settings' });
+    console.debug('[Dashboard][Settings] display() called — rendering settings UI');
 
     // ── Canvas Appearance ──────────────────────────────────────────────────
     containerEl.createEl('h3', { text: 'Canvas Appearance' });

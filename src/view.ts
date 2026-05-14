@@ -578,9 +578,26 @@ export class DashboardView extends ItemView {
    * Called by the settings tab when altScrollHorizontal is toggled live.
    * Re-binds (or removes) the handler without requiring a view reload.
    */
-  refreshScrollBehaviour(): void {
+  public refreshScrollBehaviour(): void {
     console.debug('[Dashboard][View] refreshScrollBehaviour called');
-    this.bindAltScrollHandler();
+    if (!this.viewportEl) {
+      console.warn('[Dashboard][View] refreshScrollBehaviour — viewportEl not ready');
+      return;
+    }
+
+    // Remove any existing wheel listener first
+    if (this.altScrollHandler) {
+      document.removeEventListener('wheel', this.altScrollHandler, true);
+      this.altScrollHandler = null;
+      console.debug('[Dashboard][View] Removed existing wheel handler');
+    }
+
+    if (this.plugin.settings.altScrollHorizontal) {
+      this.bindAltScrollHandler();
+      console.debug('[Dashboard][View] Alt+scroll wheel handler re-attached');
+    } else {
+      console.debug('[Dashboard][View] Alt+scroll disabled — no wheel handler attached');
+    }
   }
 
   // ─── LIFECYCLE ───────────────────────────────────────────────────────────
