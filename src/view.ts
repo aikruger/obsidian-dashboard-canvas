@@ -87,20 +87,20 @@ export class DashboardView extends ItemView {
         console.debug('[Dashboard][View] layout-change fired — checking widget DOM integrity');
 
         let reboundCount = 0;
-        for (const [widgetId, leaf] of this.widgetManager.mountedLeaves.entries()) {
+        for (const [widgetId, record] of this.widgetManager.getMounts().entries()) {
           const hostEl = this.canvasEl.querySelector(`[data-widget-id="${widgetId}"] .dashboard-widget-content`) as HTMLElement;
           if (!hostEl) {
             console.warn(`[Dashboard][View] No hostEl found for widget "${widgetId}" during layout-change guard`);
             continue;
           }
 
-          const isStillInHost = hostEl.contains((leaf as any).containerEl);
+          const isStillInHost = hostEl.contains((record.leaf as any).containerEl);
           console.debug(`[Dashboard][View] layout-change guard: widget "${widgetId}" still in host: ${isStillInHost}`);
 
           if (!isStillInHost) {
             console.warn(`[Dashboard][View] ⚠️ Workspace reclaimed leaf for "${widgetId}" — re-mounting`);
             // Attempt re-mount
-            const containerEl = (leaf as any).containerEl;
+            const containerEl = (record.leaf as any).containerEl;
             if (containerEl) {
               hostEl.appendChild(containerEl);
               reboundCount++;
@@ -137,15 +137,14 @@ export class DashboardView extends ItemView {
     const contentFrame = slot.createDiv({ cls: 'dashboard-widget-content' });
 
     // Acquire leaf and mount
-    const leaf = await this.widgetManager.getOrCreateLeaf(config);
+    const { leaf, owned } = await this.widgetManager.getOrCreateLeaf(config);
     if (!leaf) {
         // Fallback approach if getOrCreateLeaf fails
         await this.widgetManager.fallbackRenderWidget(config, contentFrame);
     }
 
     if (leaf) {
-      await this.widgetManager.mountLeaf(leaf, contentFrame, config.id);
-      this.widgetManager.postMountDiagnostic(config.id, leaf, contentFrame, this.app);
+      this.widgetManager.mountLeaf(leaf as any, contentFrame, config.id, owned);
       console.debug(`[Dashboard][View] Widget "${config.id}" leaf mounted successfully`);
     } else {
       const reason = !config.filePath
