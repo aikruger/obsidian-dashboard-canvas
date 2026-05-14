@@ -1,12 +1,9 @@
-import { ItemView, WorkspaceLeaf, Menu, TFile, ViewStateResult } from 'obsidian';
+import { ItemView, WorkspaceLeaf, Menu, TFile, ViewStateResult, Notice } from 'obsidian';
 import DashboardPlugin from './main';
-import { WidgetConfig, WidgetKind } from './widget-config';
+import { WidgetConfig } from './widget-config';
 import { WidgetManager } from './widget-manager';
 import { LayoutManager } from './layout-manager';
-import { MarkdownFileSuggestModal } from './markdown-file-suggest';
-import { CanvasFileSuggestModal } from './canvas-file-suggest';
-import { BasesFileSuggestModal } from './bases-file-suggest';
-import { PluginViewSelectModal, PluginViewOption } from './plugin-view-select-modal';
+import { WidgetDiscovery } from './widget-discovery';
 
 export const VIEW_TYPE_DASHBOARD = 'dashboard-canvas-view';
 
@@ -122,7 +119,7 @@ export class DashboardView extends ItemView {
   // ─── WIDGET RENDERING ────────────────────────────────────────────────────
 
   async renderWidget(config: WidgetConfig) {
-    console.debug(`[Dashboard][View] renderWidget "${config.id}", kind="${config.kind}", viewType="${config.viewType}"`);
+    console.debug(`[Dashboard][View] renderWidget "${config.id}", viewType="${config.viewType}"`);
 
     const slot = this.canvasEl.createDiv({ cls: 'dashboard-widget-slot' });
     slot.dataset.widgetId = config.id;
@@ -150,7 +147,7 @@ export class DashboardView extends ItemView {
       this.widgetManager.postMountDiagnostic(config.id, leaf, contentFrame, this.app);
       console.debug(`[Dashboard][View] Widget "${config.id}" leaf mounted successfully`);
     } else {
-      const reason = !config.filePath && config.kind !== 'plugin'
+      const reason = !config.filePath
         ? 'No file configured'
         : 'Plugin not loaded or file not found';
       contentFrame.createEl('p', {
@@ -166,33 +163,6 @@ export class DashboardView extends ItemView {
 
   // ─── ADD / REMOVE WIDGETS ────────────────────────────────────────────────
 
-  async addWidget(
-    kind: WidgetKind,
-    viewType: string,
-    label: string,
-    filePath?: string,
-    pluginId?: string,
-    pluginState?: unknown
-  ) {
-    console.debug(`[Dashboard][View] addWidget kind="${kind}", viewType="${viewType}", label="${label}", filePath="${filePath}"`);
-    const newConfig: WidgetConfig = {
-      id: `widget-${Date.now()}`,
-      kind,
-      viewType,
-      label,
-      x: 60 + (this.plugin.settings.widgets.length * 20),
-      y: 60 + (this.plugin.settings.widgets.length * 20),
-      w: 640,
-      h: 420,
-      filePath,
-      pluginId,
-      pluginState,
-    };
-    this.plugin.settings.widgets.push(newConfig);
-    await this.plugin.saveSettings();
-    console.debug('[Dashboard][View] addWidget: saved', this.plugin.settings.widgets.length, 'widgets to data.json');
-    await this.renderWidget(newConfig);
-  }
 
   async removeWidget(widgetId: string) {
     console.debug(`[Dashboard][View] removeWidget "${widgetId}"`);
@@ -238,21 +208,27 @@ export class DashboardView extends ItemView {
     if (type === 'markdown' && filePath) {
       const file = this.app.vault.getAbstractFileByPath(filePath);
       if (file instanceof TFile) {
-        this.addWidget('markdown', 'markdown', file.basename, file.path).catch(console.error);
+        this.addWidgetForViewType('markdown', file.basename, null, file.path).catch(console.error);
         return;
       }
     }
     if (type === 'canvas' && filePath) {
       const file = this.app.vault.getAbstractFileByPath(filePath);
       if (file instanceof TFile) {
-        this.addWidget('canvas', 'canvas', file.basename, file.path).catch(console.error);
+        this.addWidgetForViewType('canvas', file.basename, null, file.path).catch(console.error);
+        return;
+      }
+    }
+    if (type === 'bases' && filePath) {
+      const file = this.app.vault.getAbstractFileByPath(filePath);
+      if (file instanceof TFile) {
+        this.addWidgetForViewType('bases', file.basename, null, file.path).catch(console.error);
         return;
       }
     }
     // Generic plugin view
-    const pluginState = vs.state ?? {};
     const displayText = activeLeaf.view?.getDisplayText?.() ?? type;
-    this.addWidget('plugin', type, displayText, undefined, undefined, pluginState).catch(console.error);
+    this.addWidgetForViewType(type, displayText, null).catch(console.error);
   }
 
   // ─── TOOLBAR ─────────────────────────────────────────────────────────────
@@ -285,115 +261,191 @@ export class DashboardView extends ItemView {
   }
 
   openAddWidgetMenu(evt: MouseEvent) {
+    console.debug('[Dashboard][View] openAddWidgetMenu triggered');
+
+    const discovery = new WidgetDiscovery(this.app);
+    const allViews = discovery.discoverAllViews();
+
+    console.debug(`[Dashboard][View] Menu will show ${allViews.length} view types`);
+
     const menu = new Menu();
 
-    menu.addItem(item =>
-      item.setTitle('Canvas file...').setIcon('layout-dashboard').onClick(() => {
-        new CanvasFileSuggestModal(this.app, (file) => {
-          this.addWidget('canvas', 'canvas', file.basename, file.path).catch(console.error);
-        }).open();
-      })
-    );
+    // Group 1: Currently open views (can be hosted immediately)
+    const openViews = allViews.filter(v => v.isOpen);
+    const closedViews = allViews.filter(v => !v.isOpen);
 
-    menu.addItem(item =>
-      item.setTitle('Bases file...').setIcon('database').onClick(() => {
-        new BasesFileSuggestModal(this.app, (file) => {
-          this.addWidget('bases', 'bases', file.basename, file.path).catch(console.error);
-        }).open();
-      })
-    );
+    if (openViews.length > 0) {
+      menu.addItem(item => item.setTitle('── Currently Open Views ──').setDisabled(true));
+      for (const view of openViews) {
+        const locationIcon = view.location === 'left' ? '◀' :
+                             view.location === 'right' ? '▶' :
+                             view.location === 'root' ? '◼' : '?';
+        menu.addItem(item =>
+          item
+            .setTitle(`${locationIcon} ${view.label}`)
+            .setIcon('layout-panel-left')
+            .onClick(async () => {
+              console.debug(`[Dashboard][View] User selected open view: "${view.viewType}"`);
+              await this.addWidgetForViewType(view.viewType, view.label, view.sampleLeaf);
+            })
+        );
+      }
+    }
 
-    menu.addItem(item =>
-      item.setTitle('Markdown note...').setIcon('file-text').onClick(() => {
-        new MarkdownFileSuggestModal(this.app, (file) => {
-          this.addWidget('markdown', 'markdown', file.basename, file.path).catch(console.error);
-        }).open();
-      })
-    );
+    // Group 2: Registered but not currently open
+    if (closedViews.length > 0) {
+      menu.addSeparator();
+      menu.addItem(item => item.setTitle('── Registered But Closed ──').setDisabled(true));
+      for (const view of closedViews) {
+        menu.addItem(item =>
+          item
+            .setTitle(`○ ${view.label}`)
+            .setIcon('circle')
+            .onClick(async () => {
+              console.debug(`[Dashboard][View] User selected closed view: "${view.viewType}" — will attempt to open`);
+              await this.addWidgetForViewType(view.viewType, view.label, null);
+            })
+        );
+      }
+    }
 
+    // Group 3: Markdown file (user picks a note)
     menu.addSeparator();
-
     menu.addItem(item =>
-      item.setTitle('Plugin view...').setIcon('plug').onClick(() => {
-        const options = this.getPluginViewOptions();
-        if (options.length === 0) {
-          console.warn('[Dashboard][View] No plugin views available — open them first');
-          return;
-        }
-        new PluginViewSelectModal(this.app, options, (selected) => {
-          this.addWidget('plugin', selected.type, selected.label).catch(console.error);
-        }).open();
-      })
+      item
+        .setTitle('📄 Markdown Note…')
+        .setIcon('file-text')
+        .onClick(() => {
+          console.debug('[Dashboard][View] User selected Markdown Note option');
+          // Open a file suggestion modal
+          this.openFilePicker('markdown');
+        })
+    );
+
+    // Group 4: Canvas file
+    menu.addItem(item =>
+      item
+        .setTitle('🖼 Canvas File…')
+        .setIcon('layout-dashboard')
+        .onClick(() => {
+          console.debug('[Dashboard][View] User selected Canvas File option');
+          this.openFilePicker('canvas');
+        })
+    );
+
+    // Group 5: Bases file
+    menu.addItem(item =>
+      item
+        .setTitle('🗃 Bases File…')
+        .setIcon('database')
+        .onClick(() => {
+          console.debug('[Dashboard][View] User selected Bases File option');
+          this.openFilePicker('bases');
+        })
     );
 
     menu.showAtMouseEvent(evt);
+    console.debug('[Dashboard][View] Menu shown with', allViews.length, 'view entries');
   }
 
-  getPluginViewOptions(): PluginViewOption[] {
-    const seen = new Set<string>();
-    const results: PluginViewOption[] = [];
+  /**
+   * Add a widget for a given viewType.
+   * If the leaf doesn't exist yet, attempt to create one.
+   */
+  async addWidgetForViewType(
+    viewType: string,
+    label: string,
+    existingLeaf: WorkspaceLeaf | null,
+    filePath?: string
+  ) {
+    console.debug(`[Dashboard][View] addWidgetForViewType: viewType="${viewType}" label="${label}"`);
 
-    // --- Track 1: currently open leaves (gives us display text) ---
-    this.app.workspace.iterateAllLeaves((leaf) => {
-      const type = leaf.getViewState().type;
-      if (
-        !seen.has(type) &&
-        type !== VIEW_TYPE_DASHBOARD &&
-        type !== 'markdown' &&
-        type !== 'canvas' &&
-        type !== 'empty'
-      ) {
-        seen.add(type);
-        results.push({ type, label: leaf.view?.getDisplayText?.() ?? type });
-      }
-    });
-
-    // --- Track 2: all view types registered by loaded plugins ---
-    // Plugins register views via app.viewRegistry internally
-    const viewRegistry = (this.app as unknown as {
-      viewRegistry?: { typeByExtension?: Record<string, unknown> }
-    }).viewRegistry;
-
-    if (viewRegistry?.typeByExtension) {
-      for (const type of Object.keys(viewRegistry.typeByExtension)) {
-        if (
-          !seen.has(type) &&
-          type !== VIEW_TYPE_DASHBOARD &&
-          type !== 'markdown' &&
-          type !== 'canvas' &&
-          type !== 'empty'
-        ) {
-          seen.add(type);
-          results.push({ type, label: type }); // no display text available without a live leaf
-        }
-      }
-    }
-
-    // --- Track 3: scan plugin instances for any registerView calls ---
-    // Some plugins don't appear in typeByExtension (they use registerView directly)
-    const plugins = (this.app as unknown as {
-      plugins?: { plugins?: Record<string, unknown> }
-    }).plugins?.plugins;
-
-    if (plugins) {
-      for (const pluginId of Object.keys(plugins)) {
-        const plugin = plugins[pluginId] as {
-          VIEW_TYPE?: string;
-          [key: string]: unknown;
-        };
-        // Heuristic: many plugins export a VIEW_TYPE constant on their main class
-        if (plugin.VIEW_TYPE && typeof plugin.VIEW_TYPE === 'string') {
-          const type = plugin.VIEW_TYPE;
-          if (!seen.has(type) && type !== VIEW_TYPE_DASHBOARD) {
-            seen.add(type);
-            results.push({ type, label: `${pluginId} (${type})` });
+    // If no leaf exists, try to open the view via its registered command
+    if (!existingLeaf) {
+      console.debug(`[Dashboard][View] No leaf for "${viewType}" — attempting to create via workspace`);
+      try {
+        const newLeaf = this.app.workspace.getRightLeaf(false);
+        if (newLeaf) {
+          await newLeaf.setViewState({ type: viewType });
+          existingLeaf = newLeaf;
+          console.debug(`[Dashboard][View] Created new leaf for "${viewType}" in right sidebar`);
+          // Allow view to initialise
+          await new Promise(resolve => window.setTimeout(resolve, 150));
+          if (typeof (existingLeaf as any).loadIfDeferred === 'function') {
+            await (existingLeaf as any).loadIfDeferred();
           }
         }
+      } catch (err) {
+        console.error(`[Dashboard][View] Failed to create leaf for "${viewType}":`, err);
       }
     }
 
-    console.debug('[Dashboard][View] getPluginViewOptions — found', results.length, 'view types:', results.map(r => r.type));
-    return results;
+    if (!existingLeaf) {
+      console.error(`[Dashboard][View] Cannot add widget — no leaf available for "${viewType}"`);
+      new Notice(`Could not open view: ${label}. Try opening it manually first.`);
+      return;
+    }
+
+    const newConfig: WidgetConfig = {
+      id: `widget-${viewType}-${Date.now()}`,
+      viewType,
+      label,
+      filePath,
+      x: 40 + (this.plugin.settings.widgets.length * 30),  // stagger so they don't all stack
+      y: 40 + (this.plugin.settings.widgets.length * 30),
+      w: 640,
+      h: 480,
+    };
+
+    console.debug(`[Dashboard][View] Creating widget config:`, JSON.stringify(newConfig));
+    this.plugin.settings.widgets.push(newConfig);
+    await this.plugin.saveSettings();
+    await this.renderWidget(newConfig);
+    console.debug(`[Dashboard][View] Widget "${newConfig.id}" added and rendered`);
+  }
+
+  /**
+   * Open a file picker for markdown or canvas files.
+   * Uses Obsidian's built-in SuggestModal pattern.
+   */
+  openFilePicker(type: 'markdown' | 'canvas' | 'bases') {
+    console.debug(`[Dashboard][View] openFilePicker for type="${type}"`);
+    const ext = type === 'canvas' ? 'canvas' : (type === 'bases' ? 'base' : 'md');
+    const files = this.app.vault.getFiles().filter(f => f.extension === ext);
+    console.debug(`[Dashboard][View] Found ${files.length} .${ext} files in vault`);
+
+    // Use Obsidian's FuzzySuggestModal
+    const { FuzzySuggestModal } = require('obsidian');
+    class FilePicker extends FuzzySuggestModal<TFile> {
+      constructor(app: any, private onChoose: (file: any) => void) {
+        super(app);
+      }
+      getItems() { return files; }
+      getItemText(file: any) { return file.path; }
+      onChooseItem(file: any) { this.onChoose(file); }
+    }
+
+    new FilePicker(this.app, async (file: any) => {
+      console.debug(`[Dashboard][View] File picked: "${file.path}" for type="${type}"`);
+      const newConfig: WidgetConfig = {
+        id: `widget-${type}-${Date.now()}`,
+        viewType: type,
+        label: file.basename,
+        filePath: file.path,
+        x: 40,
+        y: 40,
+        w: 640,
+        h: 480,
+      };
+      this.plugin.settings.widgets.push(newConfig);
+      await this.plugin.saveSettings();
+      // For file-based views, open the file in a new leaf then mount it
+      const leaf = this.app.workspace.getLeaf(false);
+      await leaf.openFile(file);
+      await new Promise(resolve => window.setTimeout(resolve, 100));
+      await this.renderWidget(newConfig);
+      console.debug(`[Dashboard][View] File widget created for "${file.path}"`);
+    }).open();
   }
 
   // ─── ZOOM & PAN ──────────────────────────────────────────────────────────

@@ -83,8 +83,8 @@ export class WidgetManager {
         newLeaf = wsAny.createLeafInParent(rootSplit, rootSplit.children?.length ?? 0);
         console.debug('[Dashboard][WidgetManager] Created new leaf via createLeafInParent');
 
-        // --- Special Handling for Markdown & Bases ---
-        if ((config.kind === 'markdown' || config.kind === 'bases' || config.kind === 'canvas') && config.filePath) {
+        // --- Special Handling for Markdown & Bases & Canvas ---
+        if ((config.viewType === 'markdown' || config.viewType === 'bases' || config.viewType === 'canvas') && config.filePath) {
             const file = this.app.vault.getAbstractFileByPath(config.filePath);
             if (file instanceof TFile) {
                 await newLeaf.openFile(file);
@@ -98,7 +98,7 @@ export class WidgetManager {
              // Set the view type
              await newLeaf.setViewState({
                  type: config.viewType,
-                 state: (config.pluginState ?? {}) as Record<string, unknown>
+                 state: (config as any).pluginState ?? {}
              });
              console.debug(`[Dashboard][WidgetManager] Set viewState to "${config.viewType}" on new leaf`);
         }
