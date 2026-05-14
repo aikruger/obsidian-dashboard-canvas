@@ -11,6 +11,9 @@ export class WidgetManager {
   private app: App;
   public hostedLeaves: Map<string, WorkspaceLeaf> = new Map();
   private ownedLeaves: Set<string> = new Set();
+  public mountedLeaves: Map<string, WorkspaceLeaf> = new Map();
+  private originalParents: Map<string, { parent: HTMLElement | null; nextSibling: ChildNode | null }> = new Map();
+  public observers: Map<string, MutationObserver> = new Map();
 
   constructor(app: App) {
     this.app = app;
@@ -23,141 +26,6 @@ export class WidgetManager {
    *
    * This is the legitimate path — leaf stays in workspace tree.
    */
-  async hostLeafInElement(
-    config: WidgetConfig,
-    hostEl: HTMLElement
-  ): Promise<WorkspaceLeaf | null> {
-    const { workspace } = this.app;
-
-    console.debug(`[Dashboard][WidgetManager] hostLeafInElement START — widget="${config.id}" viewType="${config.viewType}"`);
-    console.debug(`[Dashboard][WidgetManager] hostEl dimensions: ${hostEl.offsetWidth}x${hostEl.offsetHeight}`);
-
-    if (this.hostedLeaves.has(config.id)) {
-      console.debug(`[Dashboard][WidgetManager] Reusing already-hosted leaf for widget "${config.id}"`);
-      return this.hostedLeaves.get(config.id)!;
-    }
-
-    // Step A1: Get or create the leaf we want to host
-    let targetLeaf: WorkspaceLeaf | null = null;
-    const existingLeaves = workspace.getLeavesOfType(config.viewType);
-
-    console.debug(`[Dashboard][WidgetManager] getLeavesOfType("${config.viewType}") returned ${existingLeaves.length} leaves`);
-
-    if (existingLeaves.length > 0 && existingLeaves[0] !== undefined) {
-      targetLeaf = existingLeaves[0];
-      console.debug(`[Dashboard][WidgetManager] Using existing leaf, parent type: ${(targetLeaf as any).parent?.constructor?.name}`);
-    } else {
-      console.debug(`[Dashboard][WidgetManager] No existing leaf — will create via createLeafInParent`);
-    }
-
-    // Step A2: Create a WorkspaceSplit inside hostEl
-    // We use the internal API: workspace.createLeafInParent needs a WorkspaceSplit
-    // But we need to CREATE that split first inside our hostEl
-
-    // Method: use (workspace as any) to access createLeafBySplit or equivalent
-    const wsAny = workspace as any;
-
-    console.debug('[Dashboard][WidgetManager] Checking for createLeafInParent:', typeof wsAny.createLeafInParent);
-    console.debug('[Dashboard][WidgetManager] Checking for rootSplit:', wsAny.rootSplit?.constructor?.name);
-    console.debug('[Dashboard][WidgetManager] rootSplit.children count:', wsAny.rootSplit?.children?.length);
-
-    // Step A3: The key insight — use workspace.createLeafInParent
-    // to place a new leaf in the rootSplit, then move its containerEl subtree
-    // into our hostEl, while leaving the leaf in the workspace tree
-    try {
-      const rootSplit: WorkspaceSplit = wsAny.rootSplit;
-
-      if (!rootSplit) {
-        console.error('[Dashboard][WidgetManager] rootSplit is null — cannot proceed');
-        return null;
-      }
-
-      let newLeaf: WorkspaceLeaf;
-
-      if (targetLeaf) {
-        // Use the existing leaf — we will reposition its containerEl subtree
-        newLeaf = targetLeaf;
-        console.debug('[Dashboard][WidgetManager] Reusing existing leaf:', newLeaf.getViewState());
-      } else {
-        // Create a new leaf legitimately in the root split
-        newLeaf = wsAny.createLeafInParent(rootSplit, rootSplit.children?.length ?? 0);
-        console.debug('[Dashboard][WidgetManager] Created new leaf via createLeafInParent');
-
-        // --- Special Handling for Markdown & Bases & Canvas ---
-        if ((config.viewType === 'markdown' || config.viewType === 'bases' || config.viewType === 'canvas') && config.filePath) {
-            const file = this.app.vault.getAbstractFileByPath(config.filePath);
-            if (file instanceof TFile) {
-                await newLeaf.openFile(file);
-                console.debug(`[Dashboard][WidgetManager] Opened file "${config.filePath}" in new leaf`);
-            } else {
-                 console.warn(`[Dashboard][WidgetManager] File not found: "${config.filePath}"`);
-                 newLeaf.detach();
-                 return null;
-            }
-        } else {
-             // Set the view type
-             await newLeaf.setViewState({
-                 type: config.viewType,
-                 state: (config as any).pluginState ?? {}
-             });
-             console.debug(`[Dashboard][WidgetManager] Set viewState to "${config.viewType}" on new leaf`);
-        }
-
-        // For deferred views (Obsidian >= 1.7.2), ensure loaded
-        if (typeof (newLeaf as any).loadIfDeferred === 'function') {
-          await (newLeaf as any).loadIfDeferred();
-          console.debug('[Dashboard][WidgetManager] loadIfDeferred() called on leaf');
-        }
-        this.ownedLeaves.add(config.id);
-      }
-
-      // Step A4: Move the containerEl SUBTREE into our host
-      // IMPORTANT: we are moving the PARENT of containerEl (the WorkspaceTabs wrapper)
-      // not just the leaf itself, to preserve Obsidian's expected DOM structure
-
-      const leafContainerEl = (newLeaf as any).containerEl as HTMLElement;
-      const tabsWrapper = leafContainerEl.parentElement; // This is the WorkspaceTabs DOM node
-
-      console.debug('[Dashboard][WidgetManager] leafContainerEl:', leafContainerEl?.className);
-      console.debug('[Dashboard][WidgetManager] tabsWrapper (parent):', tabsWrapper?.className);
-      console.debug('[Dashboard][WidgetManager] tabsWrapper.parentElement:', tabsWrapper?.parentElement?.className);
-
-      if (!tabsWrapper) {
-        console.error('[Dashboard][WidgetManager] tabsWrapper is null — leaf DOM structure unexpected');
-        // Fallback: try moving containerEl directly
-        console.debug('[Dashboard][WidgetManager] Fallback: moving containerEl directly');
-        hostEl.appendChild(leafContainerEl);
-        leafContainerEl.style.cssText = 'width:100%;height:100%;overflow:hidden;position:relative;';
-      } else {
-        // Move the tabs wrapper into our host
-        hostEl.appendChild(tabsWrapper);
-        tabsWrapper.style.cssText = 'width:100%;height:100%;overflow:hidden;position:relative;';
-        leafContainerEl.style.cssText = 'width:100%;height:100%;overflow:hidden;position:relative;';
-        console.debug(`[Dashboard][WidgetManager] Moved tabsWrapper into hostEl for widget "${config.id}"`);
-      }
-
-      // Step A5: Store references for cleanup
-      this.hostedLeaves.set(config.id, newLeaf);
-
-      // Force a layout trigger on the view
-      workspace.trigger('layout-change');
-      console.debug('[Dashboard][WidgetManager] Triggered layout-change event');
-
-      // Log final DOM state
-      console.debug('[Dashboard][WidgetManager] Final hostEl children:',
-        Array.from(hostEl.children).map(c => `${c.tagName}.${c.className}`).join(', '));
-      console.debug('[Dashboard][WidgetManager] Final leafContainerEl dimensions:',
-        `${leafContainerEl.offsetWidth}x${leafContainerEl.offsetHeight}`);
-
-      return newLeaf;
-
-    } catch (err: any) {
-      console.error(`[Dashboard][WidgetManager] hostLeafInElement FAILED for "${config.id}":`, err);
-      console.error('[Dashboard][WidgetManager] Error stack:', err.stack);
-      return null;
-    }
-  }
-
   /**
    * Strategy B fallback: when Strategy A fails, render the view's content
    * using MarkdownRenderer for note-based views, or a command-triggered
@@ -218,46 +86,281 @@ export class WidgetManager {
    * Called on view close.
    */
   restoreAll() {
-    console.debug(`[Dashboard][WidgetManager] restoreAll — restoring ${this.hostedLeaves.size} leaves`);
+    console.debug(`[Dashboard][WidgetManager] restoreAll — restoring ${this.mountedLeaves.size} leaves`);
 
-    for (const [widgetId, leaf] of this.hostedLeaves.entries()) {
-      try {
-        if (this.ownedLeaves.has(widgetId)) {
-          console.debug(`[Dashboard][WidgetManager] Detaching owned leaf for widget "${widgetId}"`);
-          leaf.detach();
-        } else {
-            // Move the leaf's DOM back into the root split's DOM
-            const wsAny = this.app.workspace as any;
-            const rootSplit = wsAny.rootSplit;
-
-            if (rootSplit && rootSplit.containerEl) {
-            const tabsWrapper = (leaf as any).containerEl.parentElement;
-            if (tabsWrapper) {
-                rootSplit.containerEl.appendChild(tabsWrapper);
-                console.debug(`[Dashboard][WidgetManager] Restored leaf "${widgetId}" to rootSplit DOM`);
-            } else {
-                console.warn(`[Dashboard][WidgetManager] tabsWrapper missing for "${widgetId}" — detaching leaf`);
-                leaf.detach();
-            }
-            }
-        }
-      } catch (err) {
-        console.error(`[Dashboard][WidgetManager] Error restoring leaf "${widgetId}":`, err);
-      }
+    for (const widgetId of Array.from(this.mountedLeaves.keys())) {
+      this.restoreLeaf(widgetId);
     }
 
-    // Trigger workspace re-layout
-    this.app.workspace.trigger('layout-change');
-    console.debug(`[Dashboard][WidgetManager] layout-change triggered after restore`);
-
-    this.hostedLeaves.clear();
     this.ownedLeaves.clear();
     console.debug('[Dashboard][WidgetManager] restoreAll complete');
   }
 
   async getOrCreateLeaf(config: WidgetConfig): Promise<WorkspaceLeaf | null> {
-    // Kept to avoid modifying `src/view.ts` signatures. We will redirect functionality to hostLeafInElement
+    console.debug(`[Dashboard][WidgetManager] getOrCreateLeaf — widget="${config.id}", viewType="${config.viewType}"`);
+
+    if (this.mountedLeaves.has(config.id)) {
+      console.debug(`[Dashboard][WidgetManager] Reusing already-mounted leaf for widget "${config.id}"`);
+      return this.mountedLeaves.get(config.id)!;
+    }
+
+    const { workspace } = this.app;
+
+    // --- CANVAS ---
+    if (config.viewType === 'canvas' && config.filePath) {
+      const file = this.app.vault.getAbstractFileByPath(config.filePath);
+      if (!(file instanceof TFile)) {
+        console.warn(`[Dashboard][WidgetManager] Canvas file not found: "${config.filePath}"`);
+        return null;
+      }
+      const leaf = workspace.getRightLeaf(false);
+      if (!leaf) { console.warn('[Dashboard][WidgetManager] Could not get right sidebar leaf for canvas'); return null; }
+      await leaf.openFile(file);
+      this.ownedLeaves.add(config.id);
+      console.debug(`[Dashboard][WidgetManager] Canvas leaf created for widget "${config.id}"`);
+      return leaf;
+    }
+
+    // --- BASES ---
+    if (config.viewType === 'bases' && config.filePath) {
+      const file = this.app.vault.getAbstractFileByPath(config.filePath);
+      if (!(file instanceof TFile)) {
+        console.warn(`[Dashboard][WidgetManager] Bases file not found: "${config.filePath}"`);
+        return null;
+      }
+      const leaf = workspace.getRightLeaf(false);
+      if (!leaf) {
+        console.warn('[Dashboard][WidgetManager] Could not get right sidebar leaf for bases');
+        return null;
+      }
+      await leaf.openFile(file);
+
+      // Wait for Bases view to initialise — it's async
+      let attempts = 0;
+      while (attempts < 10) {
+        const type = leaf.getViewState().type;
+        if (type === 'bases') {
+          console.debug(`[Dashboard][WidgetManager] Bases leaf ready after ${attempts * 100}ms, widget "${config.id}"`);
+          break;
+        }
+        console.debug(`[Dashboard][WidgetManager] Waiting for bases view on "${config.filePath}" (attempt ${attempts + 1})...`);
+        await new Promise(resolve => window.setTimeout(resolve, 100));
+        attempts++;
+      }
+
+      if (leaf.getViewState().type !== 'bases') {
+        console.warn(`[Dashboard][WidgetManager] Bases view never became ready for "${config.filePath}" — is Bases enabled?`);
+        leaf.detach();
+        return null;
+      }
+
+      this.ownedLeaves.add(config.id);
+      console.debug(`[Dashboard][WidgetManager] Bases leaf created for widget "${config.id}", file="${config.filePath}"`);
+      return leaf;
+    }
+
+    // --- PLUGIN VIEW ---
+    if (config.viewType) {
+      // Find existing
+      const existingLeaves = workspace.getLeavesOfType(config.viewType);
+      if (existingLeaves.length > 0 && existingLeaves[0] !== undefined) {
+        console.debug(`[Dashboard][WidgetManager] Found ${existingLeaves.length} existing leaf(ves) for viewType "${config.viewType}", using first`);
+        return existingLeaves[0];
+      }
+
+      const leaf = workspace.getRightLeaf(false);
+      if (!leaf) {
+        console.warn(`[Dashboard][WidgetManager] Could not get right sidebar leaf for plugin view "${config.viewType}"`);
+        return null;
+      }
+      try {
+        await leaf.setViewState({
+          type: config.viewType,
+          state: (config as any).pluginState ?? {}
+        });
+
+        // Wait for the view to finish initialising (some plugins are async in onOpen)
+        // Poll up to 10 times at 100ms intervals
+        let attempts = 0;
+        while (attempts < 10) {
+          const viewType = leaf.getViewState().type;
+          if (viewType === config.viewType) {
+            console.debug(`[Dashboard][WidgetManager] Plugin view "${config.viewType}" ready after ${attempts * 100}ms`);
+            break;
+          }
+          console.debug(`[Dashboard][WidgetManager] Waiting for "${config.viewType}" to initialise (attempt ${attempts + 1})...`);
+          await new Promise(resolve => window.setTimeout(resolve, 100));
+          attempts++;
+        }
+
+        if (leaf.getViewState().type !== config.viewType) {
+          console.warn(`[Dashboard][WidgetManager] Plugin view "${config.viewType}" never became ready — leaf type is "${leaf.getViewState().type}"`);
+          leaf.detach();
+          return null;
+        }
+
+        this.ownedLeaves.add(config.id);
+        console.debug(`[Dashboard][WidgetManager] Plugin view leaf ready for "${config.viewType}", widget "${config.id}"`);
+        return leaf;
+      } catch (err) {
+        console.error(`[Dashboard][WidgetManager] setViewState failed for "${config.viewType}" (plugin not loaded?):`, err);
+        return null;
+      }
+    }
+
+    console.warn(`[Dashboard][WidgetManager] No handler matched for widget "${config.id}"`);
     return null;
+  }
+
+  async mountLeaf(
+    leaf: WorkspaceLeaf,
+    hostEl: HTMLElement,
+    widgetId: string
+  ): Promise<boolean> {
+    const { workspace } = this.app;
+
+    console.debug(`[Dashboard][Mount] START widget="${widgetId}" viewType="${leaf.getViewState().type}"`);
+
+    // Step 1: Make Obsidian treat this leaf as revealed (removes display:none)
+    // revealLeaf navigates to the leaf's tab group and makes it the active tab
+    workspace.revealLeaf(leaf);
+    console.debug(`[Dashboard][Mount] revealLeaf called for "${widgetId}"`);
+
+    // Small wait for Obsidian to finish the reveal animation/layout cycle
+    await new Promise(resolve => window.setTimeout(resolve, 80));
+
+    // Step 2: Load deferred view if needed (Obsidian >= 1.7.2)
+    if (typeof (leaf as any).loadIfDeferred === 'function') {
+      await (leaf as any).loadIfDeferred();
+      console.debug(`[Dashboard][Mount] loadIfDeferred complete for "${widgetId}"`);
+    }
+
+    const containerEl = (leaf as any).containerEl as HTMLElement;
+    console.debug(`[Dashboard][Mount] containerEl class="${containerEl.className}"`);
+    console.debug(`[Dashboard][Mount] containerEl current parent class="${containerEl.parentElement?.className}"`);
+    console.debug(`[Dashboard][Mount] containerEl computed display="${window.getComputedStyle(containerEl).display}"`);
+    console.debug(`[Dashboard][Mount] containerEl rect before move:`, containerEl.getBoundingClientRect());
+
+    // Step 3: Record original location for restore
+    this.originalParents.set(widgetId, {
+      parent: containerEl.parentElement,
+      nextSibling: containerEl.nextSibling,
+    });
+
+    // Step 4: Move containerEl into host
+    hostEl.appendChild(containerEl);
+    console.debug(`[Dashboard][Mount] containerEl moved into hostEl for "${widgetId}"`);
+
+    // Step 5: Override any residual display:none / visibility:hidden Obsidian set
+    containerEl.style.removeProperty('display');
+    containerEl.style.removeProperty('visibility');
+    containerEl.style.cssText = [
+      containerEl.style.cssText,
+      'width:100% !important',
+      'height:100% !important',
+      'max-width:none !important',
+      'max-height:none !important',
+      'position:relative !important',
+      'display:flex !important',
+      'flex-direction:column !important',
+    ].join(';');
+    console.debug(`[Dashboard][Mount] Forced styles applied to containerEl`);
+
+    // Step 6: Guard against Obsidian re-hiding the leaf
+    // When layout-change fires, Obsidian may set display:none on inactive tabs
+    const observer = new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        if (m.type === 'attributes' && m.attributeName === 'style') {
+          const el = m.target as HTMLElement;
+          const display = el.style.display;
+          const visibility = el.style.visibility;
+          if (display === 'none' || visibility === 'hidden') {
+            console.warn(`[Dashboard][Mount] ⚠️ Obsidian tried to hide "${widgetId}" — overriding`);
+            el.style.removeProperty('display');
+            el.style.removeProperty('visibility');
+            el.style.display = 'flex';
+          }
+        }
+      }
+    });
+    observer.observe(containerEl, { attributes: true, attributeFilter: ['style', 'class'] });
+    this.observers.set(widgetId, observer);
+    console.debug(`[Dashboard][Mount] MutationObserver guard active for "${widgetId}"`);
+
+    // Step 7: Trigger a resize event so the plugin's view re-measures itself
+    window.dispatchEvent(new Event('resize'));
+    console.debug(`[Dashboard][Mount] resize event dispatched`);
+
+    // Step 8: Verify the mount worked
+    await new Promise(resolve => window.setTimeout(resolve, 50));
+    const finalRect = containerEl.getBoundingClientRect();
+    console.debug(`[Dashboard][Mount] FINAL containerEl rect:`, finalRect);
+    if (finalRect.width === 0 || finalRect.height === 0) {
+      console.error(`[Dashboard][Mount] ❌ FAILED — containerEl still 0×0 after mount for "${widgetId}"`);
+      console.debug(`[Dashboard][Mount] hostEl rect:`, hostEl.getBoundingClientRect());
+      console.debug(`[Dashboard][Mount] hostEl computed display:`, window.getComputedStyle(hostEl).display);
+      console.debug(`[Dashboard][Mount] hostEl computed height:`, window.getComputedStyle(hostEl).height);
+      // Walk parent chain looking for what is causing 0 height
+      let el: HTMLElement | null = hostEl;
+      let depth = 0;
+      while (el && depth < 8) {
+        const cs = window.getComputedStyle(el);
+        console.debug(`[Dashboard][Mount] ancestor[${depth}] <${el.tagName}.${el.className}> display=${cs.display} height=${cs.height} overflow=${cs.overflow}`);
+        el = el.parentElement;
+        depth++;
+      }
+      return false;
+    }
+
+    console.debug(`[Dashboard][Mount] ✅ SUCCESS — "${widgetId}" mounted at ${Math.round(finalRect.width)}x${Math.round(finalRect.height)}`);
+    this.mountedLeaves.set(widgetId, leaf);
+    return true;
+  }
+
+  restoreLeaf(widgetId: string): void {
+    console.debug(`[Dashboard][Restore] Restoring widget "${widgetId}"`);
+
+    // Stop the mutation guard first
+    const observer = this.observers.get(widgetId);
+    if (observer) {
+      observer.disconnect();
+      this.observers.delete(widgetId);
+      console.debug(`[Dashboard][Restore] MutationObserver disconnected for "${widgetId}"`);
+    }
+
+    const leaf = this.mountedLeaves.get(widgetId);
+    const originalLocation = this.originalParents.get(widgetId);
+
+    if (!leaf) {
+      console.warn(`[Dashboard][Restore] No mounted leaf found for "${widgetId}"`);
+      return;
+    }
+
+    const containerEl = (leaf as any).containerEl as HTMLElement;
+
+    // Remove our forced styles so Obsidian can manage the leaf normally again
+    containerEl.style.cssText = '';
+    console.debug(`[Dashboard][Restore] Cleared forced styles from containerEl`);
+
+    if (originalLocation?.parent) {
+      originalLocation.parent.insertBefore(containerEl, originalLocation.nextSibling);
+      console.debug(`[Dashboard][Restore] containerEl returned to original parent "${originalLocation.parent.className}"`);
+    } else {
+      // Fallback: put it back in the right sidebar
+      const fallbackLeaf = this.app.workspace.getRightLeaf(false);
+      if (fallbackLeaf) {
+        (fallbackLeaf as any).containerEl.parentElement?.appendChild(containerEl);
+        console.debug(`[Dashboard][Restore] containerEl moved to right sidebar fallback`);
+      } else {
+        leaf.detach();
+        console.debug(`[Dashboard][Restore] Leaf detached as last resort`);
+      }
+    }
+
+    this.mountedLeaves.delete(widgetId);
+    this.originalParents.delete(widgetId);
+    this.app.workspace.trigger('layout-change');
+    console.debug(`[Dashboard][Restore] layout-change triggered after restore of "${widgetId}"`);
   }
 
   postMountDiagnostic(
