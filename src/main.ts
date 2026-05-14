@@ -1,6 +1,7 @@
 import { Plugin, WorkspaceLeaf } from 'obsidian';
 import { DashboardView, VIEW_TYPE_DASHBOARD } from './view';
 import { DEFAULT_SETTINGS, DashboardSettings } from './widget-config';
+import { DashboardSettingTab } from './settings-tab';
 
 export default class DashboardPlugin extends Plugin {
   settings: DashboardSettings;
@@ -43,6 +44,10 @@ export default class DashboardPlugin extends Plugin {
     this.addRibbonIcon('layout-dashboard', 'Open dashboard canvas', () => {
       this.activateDashboard().catch(console.error);
     });
+
+    // NEW — register the settings tab
+    this.addSettingTab(new DashboardSettingTab(this.app, this));
+    console.debug('[Dashboard] Settings tab registered');
 
     console.debug('[Dashboard] Plugin loaded, command registered');
   }

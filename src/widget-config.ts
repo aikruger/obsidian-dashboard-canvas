@@ -2,10 +2,10 @@
 
 export interface WidgetConfig {
   id: string;
-  viewType: string;       // discovered dynamically — never hardcoded
-  label: string;          // the display name shown in the widget title bar
-  filePath?: string;      // only needed for markdown/canvas file-based views
-  openCommandId?: string; // optional: command to fire if no leaf exists yet
+  viewType: string;
+  label: string;
+  filePath?: string;
+  openCommandId?: string;
   x: number;
   y: number;
   w: number;
@@ -14,7 +14,9 @@ export interface WidgetConfig {
 
 export interface DashboardSettings {
   widgets: WidgetConfig[];
-  canvasBackground: string;
+  canvasBackground: string;   // CSS colour string or 'default'
+  altScrollHorizontal: boolean; // Alt+wheel scrolls canvas horizontally
+  altScrollSpeed: number;       // px per wheel tick for alt-scroll
   snapToGrid: boolean;
   gridSize: number;
   zoom?: number;
@@ -25,6 +27,8 @@ export interface DashboardSettings {
 export const DEFAULT_SETTINGS: DashboardSettings = {
   widgets: [],
   canvasBackground: 'default',
+  altScrollHorizontal: true,
+  altScrollSpeed: 40,
   snapToGrid: false,
   gridSize: 20,
   zoom: 1,

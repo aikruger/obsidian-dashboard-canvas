@@ -16,6 +16,7 @@ export class DashboardView extends ItemView {
   zoom = 1;
   panX = 0;
   panY = 0;
+  private altScrollHandler: ((ev: WheelEvent) => void) | null = null;
 
   constructor(leaf: WorkspaceLeaf, plugin: DashboardPlugin) {
     super(leaf);
@@ -53,6 +54,10 @@ export class DashboardView extends ItemView {
     this.panX = this.plugin.settings.panX ?? 0;
     this.panY = this.plugin.settings.panY ?? 0;
     this.applyTransform();
+
+    // Apply saved canvas background
+    this.applyCanvasBackground(this.plugin.settings.canvasBackground);
+    console.debug('[Dashboard][View] Canvas background applied:', this.plugin.settings.canvasBackground);
 
     // Layout manager — pass a getZoom accessor so it can divide interact.js deltas
     this.layoutManager = new LayoutManager(
@@ -440,6 +445,21 @@ export class DashboardView extends ItemView {
 
   // ─── ZOOM & PAN ──────────────────────────────────────────────────────────
 
+  /**
+   * Apply a background colour to the canvas.
+   * Called on open, and live from the settings tab.
+   */
+  applyCanvasBackground(colour: string): void {
+    if (!this.viewportEl) return;
+    if (!colour || colour === 'default') {
+      this.viewportEl.style.removeProperty('background-color');
+      console.debug('[Dashboard][View] Canvas background reset to theme default');
+    } else {
+      this.viewportEl.style.backgroundColor = colour;
+      console.debug('[Dashboard][View] Canvas background set to:', colour);
+    }
+  }
+
   applyTransform() {
     if (!this.canvasEl) return;
     this.canvasEl.style.transform = `translate(${this.panX}px, ${this.panY}px) scale(${this.zoom})`;
@@ -459,7 +479,7 @@ export class DashboardView extends ItemView {
   }
 
   setupPanAndZoom() {
-    // Ctrl+Wheel zoom
+    // Ctrl+Wheel zoom — always active
     this.viewportEl.addEventListener('wheel', (ev: WheelEvent) => {
       if (!ev.ctrlKey) return;
       ev.preventDefault();
@@ -467,7 +487,7 @@ export class DashboardView extends ItemView {
       this.changeZoom(delta);
     }, { passive: false });
 
-    // Left-click drag to pan
+    // Left-click drag to pan (on the bare viewport, not on a widget)
     let isPanning = false;
     let startX = 0, startY = 0, startPanX = 0, startPanY = 0;
 
@@ -499,12 +519,82 @@ export class DashboardView extends ItemView {
       this.plugin.saveSettings().catch(console.error);
       console.debug(`[Dashboard][View] Pan end: (${Math.round(this.panX)}, ${Math.round(this.panY)})`);
     });
+
+    // Bind Alt+wheel horizontal scroll based on current setting
+    this.bindAltScrollHandler();
+  }
+
+  /**
+   * Bind or unbind the Alt+wheel horizontal-pan handler.
+   * Attaches to the document so it fires regardless of which widget the
+   * cursor is currently over — widget iframes/content would otherwise
+   * consume the event before it bubbles to the viewport.
+   */
+  bindAltScrollHandler(): void {
+    // Remove any existing handler first to avoid duplicates
+    if (this.altScrollHandler) {
+      document.removeEventListener('wheel', this.altScrollHandler, true);
+      this.altScrollHandler = null;
+      console.debug('[Dashboard][View] Alt+scroll handler removed');
+    }
+
+    if (!this.plugin.settings.altScrollHorizontal) {
+      console.debug('[Dashboard][View] Alt+scroll disabled in settings — not binding');
+      return;
+    }
+
+    const speed = this.plugin.settings.altScrollSpeed ?? 40;
+
+    this.altScrollHandler = (ev: WheelEvent) => {
+      if (!ev.altKey) return;
+      // Only intercept while this dashboard view is the active leaf
+      if (!this.containerEl.isConnected) return;
+
+      ev.preventDefault();
+      ev.stopPropagation();
+
+      // deltaY is the natural scroll axis; we translate it to horizontal pan
+      const direction = ev.deltaY > 0 ? -1 : 1;
+      this.panX += direction * speed;
+      this.applyTransform();
+
+      // Debounce the settings save — use a flag to avoid hammering disk
+      if ((this as any)._altScrollSaveTimer) {
+        window.clearTimeout((this as any)._altScrollSaveTimer);
+      }
+      (this as any)._altScrollSaveTimer = window.setTimeout(() => {
+        this.plugin.settings.panX = this.panX;
+        this.plugin.saveSettings().catch(console.error);
+        console.debug(`[Dashboard][View] Alt+scroll panX saved: ${Math.round(this.panX)}`);
+      }, 300);
+    };
+
+    // Use capture phase so the event fires before widgets' own handlers
+    document.addEventListener('wheel', this.altScrollHandler, { passive: false, capture: true });
+    console.debug('[Dashboard][View] Alt+scroll handler bound (speed:', speed, 'px/tick)');
+  }
+
+  /**
+   * Called by the settings tab when altScrollHorizontal is toggled live.
+   * Re-binds (or removes) the handler without requiring a view reload.
+   */
+  refreshScrollBehaviour(): void {
+    console.debug('[Dashboard][View] refreshScrollBehaviour called');
+    this.bindAltScrollHandler();
   }
 
   // ─── LIFECYCLE ───────────────────────────────────────────────────────────
 
   async onClose() {
     console.debug('[Dashboard][View] onClose — restoring all leaves');
+
+    // Remove Alt+scroll handler so it doesn't fire after the view is closed
+    if (this.altScrollHandler) {
+      document.removeEventListener('wheel', this.altScrollHandler, true);
+      this.altScrollHandler = null;
+      console.debug('[Dashboard][View] Alt+scroll handler removed on close');
+    }
+
     this.widgetManager.restoreAll();
   }
 
