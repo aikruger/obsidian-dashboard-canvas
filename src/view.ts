@@ -30,10 +30,12 @@ export class DashboardView extends ItemView {
   getIcon() { return 'layout-dashboard'; }
 
   async onOpen() {
-    console.debug('[Dashboard][View] onOpen — reloading settings from disk');
-    // Always re-read from data.json so we have the latest saved widgets
-    await this.plugin.loadSettings();
-    console.debug('[Dashboard][View] onOpen — widget count from disk:', this.plugin.settings.widgets.length);
+    if (this.plugin.settings.widgets.length === 0) {
+      await this.plugin.loadSettings();
+      console.debug('[Dashboard][View] Cold start — loaded settings from disk');
+    } else {
+      console.debug('[Dashboard][View] Settings already in memory — skipping disk reload');
+    }
 
     const container = this.containerEl.children[1] as HTMLElement;
     container.empty();
@@ -164,6 +166,11 @@ export class DashboardView extends ItemView {
     const mountSuccess = await this.widgetManager.mountLeaf(leaf as any, contentFrame, config.id, config.label);
     if (mountSuccess) {
       console.debug(`[Dashboard][View] Widget "${config.id}" leaf mounted successfully`);
+      // Auto-refresh after mount to let FullCalendar recalculate its time grid
+      window.setTimeout(() => {
+        console.log(`[Dashboard][View] Auto-refresh after mount for "${config.id}"`);
+        this.refreshWidget(config.id);
+      }, 300);
     } else {
       const reason = !config.filePath
         ? 'No file configured'
@@ -250,6 +257,22 @@ export class DashboardView extends ItemView {
     } catch (err) {
       console.warn(`[Dashboard][View] refreshWidget: workspace trigger threw for "${widgetId}":`, err);
     }
+
+    window.setTimeout(() => {
+      // Second pass — FullCalendar sometimes needs two updateSize() calls
+      const rec2 = this.widgetManager.getMounts().get(widgetId);
+      if (!rec2) return;
+      const view2 = rec2.leaf.view as any;
+      const cal2 = view2?.calendar ?? view2?.fullCalendar ?? view2?.calendarEl?._calendar;
+      if (cal2 && typeof cal2.updateSize === 'function') {
+        try {
+          cal2.updateSize();
+          console.log(`[Dashboard][View] refreshWidget: second-pass FullCalendar.updateSize() for "${widgetId}"`);
+        } catch(e) {
+          console.warn(`[Dashboard][View] Second-pass updateSize threw:`, e);
+        }
+      }
+    }, 500);
   }
 
   /**
@@ -337,10 +360,37 @@ export class DashboardView extends ItemView {
     zoomResetBtn.title = 'Reset zoom';
     zoomResetBtn.addEventListener('click', () => this.setZoom(1));
 
-    const saveBtn = toolbarEl.createEl('button', { text: '💾 Save layout', cls: 'dashboard-toolbar-btn' });
-    saveBtn.addEventListener('click', () => {
-      this.plugin.saveSettings().catch(console.error);
-      console.debug('[Dashboard][View] Layout manually saved');
+    const sep = toolbarEl.createEl('span', { cls: 'dashboard-toolbar-sep' });
+
+    // Layout selector dropdown
+    const layoutSelect = toolbarEl.createEl('select', { cls: 'dashboard-toolbar-select' });
+    this.rebuildLayoutSelect(layoutSelect);
+    layoutSelect.addEventListener('change', async () => {
+      const selectedId = layoutSelect.value;
+      if (!selectedId) return;
+      console.log(`[Dashboard][View] Switching to layout "${selectedId}"`);
+      await this.loadLayout(selectedId);
+    });
+
+    // Save to current layout button
+    const saveBtn = toolbarEl.createEl('button', { text: '💾 Save', cls: 'dashboard-toolbar-btn' });
+    saveBtn.title = 'Save current widget arrangement to active layout';
+    saveBtn.addEventListener('click', async () => {
+      await this.saveCurrentLayout();
+    });
+
+    // Save as new named layout
+    const saveAsBtn = toolbarEl.createEl('button', { text: '💾 Save as…', cls: 'dashboard-toolbar-btn' });
+    saveAsBtn.title = 'Save as a new named layout';
+    saveAsBtn.addEventListener('click', () => {
+      this.promptSaveAsLayout(layoutSelect);
+    });
+
+    // Delete layout button
+    const deleteLayoutBtn = toolbarEl.createEl('button', { text: '🗑', cls: 'dashboard-toolbar-btn' });
+    deleteLayoutBtn.title = 'Delete active layout';
+    deleteLayoutBtn.addEventListener('click', async () => {
+      await this.deleteActiveLayout(layoutSelect);
     });
 
     const refreshAllBtn = toolbarEl.createEl('button', { text: '↺ Refresh all', cls: 'dashboard-toolbar-btn' });
@@ -349,6 +399,131 @@ export class DashboardView extends ItemView {
       console.log('[Dashboard][View] Refresh all widgets triggered from toolbar');
       this.refreshAllWidgets();
     });
+  }
+
+  rebuildLayoutSelect(selectEl: HTMLSelectElement): void {
+    selectEl.empty();
+    const placeholder = selectEl.createEl('option', { text: '— Select layout —', value: '' });
+    placeholder.disabled = true;
+    for (const layout of this.plugin.settings.layouts) {
+      const opt = selectEl.createEl('option', { text: layout.name, value: layout.id });
+      if (layout.id === this.plugin.settings.activeLayoutId) {
+        opt.selected = true;
+      }
+    }
+    console.debug('[Dashboard][View] Layout select rebuilt with', this.plugin.settings.layouts.length, 'layouts');
+  }
+
+  async saveCurrentLayout(): Promise<void> {
+    const activeId = this.plugin.settings.activeLayoutId;
+    if (!activeId) {
+      // No active layout — prompt to name it
+      new Notice('No active layout — use "Save as…" to create one');
+      return;
+    }
+    const layout = this.plugin.settings.layouts.find((l: any) => l.id === activeId);
+    if (!layout) return;
+    layout.widgets = [...this.plugin.settings.widgets];
+    layout.zoom = this.zoom;
+    layout.panX = this.panX;
+    layout.panY = this.panY;
+    await this.plugin.saveSettings();
+    new Notice(`Layout "${layout.name}" saved ✓`);
+    console.log(`[Dashboard][View] Layout "${layout.name}" saved`);
+  }
+
+  promptSaveAsLayout(selectEl: HTMLSelectElement): void {
+    // Use Obsidian's Modal for a simple text prompt
+    const { Modal, Setting } = require('obsidian');
+    class NameModal extends Modal {
+      name = '';
+      onSubmit: (name: string) => void;
+      constructor(app: any, onSubmit: (name: string) => void) {
+        super(app);
+        this.onSubmit = onSubmit;
+      }
+      onOpen() {
+        this.titleEl.setText('Save layout as…');
+        new Setting(this.contentEl)
+          .setName('Layout name')
+          .addText((t: any) => {
+            t.setPlaceholder('e.g. "Daily planning"');
+            t.onChange((v: string) => { this.name = v; });
+            // Submit on Enter
+            t.inputEl.addEventListener('keydown', (e: KeyboardEvent) => {
+              if (e.key === 'Enter') { this.close(); this.onSubmit(this.name); }
+            });
+          });
+        new Setting(this.contentEl)
+          .addButton((b: any) => b.setButtonText('Save').setCta().onClick(() => {
+            this.close();
+            this.onSubmit(this.name);
+          }));
+      }
+      onClose() { this.contentEl.empty(); }
+    }
+
+    new NameModal(this.app, async (name: string) => {
+      if (!name.trim()) return;
+      const newLayout = {
+        id: `layout-${Date.now()}`,
+        name: name.trim(),
+        widgets: [...this.plugin.settings.widgets],
+        zoom: this.zoom,
+        panX: this.panX,
+        panY: this.panY,
+        createdAt: Date.now(),
+      };
+      this.plugin.settings.layouts.push(newLayout);
+      this.plugin.settings.activeLayoutId = newLayout.id;
+      await this.plugin.saveSettings();
+      this.rebuildLayoutSelect(selectEl);
+      new Notice(`Layout "${newLayout.name}" created ✓`);
+      console.log(`[Dashboard][View] New layout created: "${newLayout.name}" (${newLayout.id})`);
+    }).open();
+  }
+
+  async loadLayout(layoutId: string): Promise<void> {
+    const layout = this.plugin.settings.layouts.find((l: any) => l.id === layoutId);
+    if (!layout) {
+      console.warn(`[Dashboard][View] loadLayout: layout "${layoutId}" not found`);
+      return;
+    }
+    console.log(`[Dashboard][View] Loading layout "${layout.name}"`);
+
+    // Restore all current widget leaves before clearing
+    this.widgetManager.restoreAll();
+
+    // Clear canvas
+    this.canvasEl.empty();
+
+    // Apply layout
+    this.plugin.settings.activeLayoutId = layoutId;
+    this.plugin.settings.widgets = [...layout.widgets];
+    this.zoom = layout.zoom ?? 1;
+    this.panX = layout.panX ?? 0;
+    this.panY = layout.panY ?? 0;
+    this.applyTransform();
+    await this.plugin.saveSettings();
+
+    for (const config of this.plugin.settings.widgets) {
+      await this.renderWidget(config);
+    }
+    new Notice(`Layout "${layout.name}" loaded ✓`);
+    console.log(`[Dashboard][View] Layout "${layout.name}" loaded — ${layout.widgets.length} widgets`);
+  }
+
+  async deleteActiveLayout(selectEl: HTMLSelectElement): Promise<void> {
+    const activeId = this.plugin.settings.activeLayoutId;
+    if (!activeId) { new Notice('No active layout to delete'); return; }
+    const layout = this.plugin.settings.layouts.find((l: any) => l.id === activeId);
+    if (!layout) return;
+    this.plugin.settings.layouts = this.plugin.settings.layouts.filter((l: any) => l.id !== activeId);
+    this.plugin.settings.activeLayoutId = null;
+    await this.plugin.saveSettings();
+    this.rebuildLayoutSelect(selectEl);
+    new Notice(`Layout "${layout.name}" deleted`);
+    console.log(`[Dashboard][View] Layout "${layout.name}" deleted`);
   }
 
   openAddWidgetMenu(evt: MouseEvent) {

@@ -8,6 +8,7 @@
 
 .dashboard-toolbar {
   display: flex;
+  flex-wrap: wrap;          /* ADD THIS — prevents clipping */
   gap: 8px;
   padding: 6px 12px;
   background: var(--background-secondary);
@@ -53,7 +54,7 @@
   position: absolute;
   border: 1px solid var(--background-modifier-border);
   border-radius: 6px;
-  overflow: hidden;
+  overflow: visible;       /* CHANGE from hidden → visible */
   display: flex;
   flex-direction: column;
   background: var(--background-secondary);
@@ -83,6 +84,7 @@
 
 .dashboard-widget-label {
   flex: 1;
+  min-width: 0;             /* ADD THIS — prevents label from pushing buttons off */
   font-weight: 500;
   color: var(--text-normal);
   font-size: 12px;
@@ -107,16 +109,43 @@
 
 .dashboard-widget-content {
   flex: 1;
-  overflow: hidden;
+  overflow: auto;           /* CHANGE to auto so inner scroll works */
   position: relative;
+  clip-path: inset(0 round 0 0 5px 5px);  /* clips bottom corners only */
+  isolation: isolate;   /* ADD — creates a new stacking context so sticky z-index works */
 }
 
-.dashboard-widget-content > .workspace-leaf {
+/* Tasks plugin swimlane column header */
+.dashboard-widget-content .tasks-group-heading,
+.dashboard-widget-content [data-task-group-heading],
+.dashboard-widget-content .task-list-item-checkbox ~ strong,
+.dashboard-widget-content thead th,
+.dashboard-widget-content .nav-folder-title {
+  z-index: 1 !important;
+  position: relative !important;
+}
+
+/* Ensure FullCalendar's internal scroll container fills the widget */
+.dashboard-widget-content .fc-scroller,
+.dashboard-widget-content .fc-timegrid-body,
+.dashboard-widget-content .fc-timegrid-slots table {
+  height: 100% !important;
+}
+
+.dashboard-widget-content .fc-view-harness {
+  height: 100% !important;
+  flex: 1 1 auto !important;
+}
+
+.dashboard-widget-content > .workspace-leaf,
+.dashboard-widget-content > .workspace-leaf > .workspace-leaf-content,
+.dashboard-widget-content > .workspace-leaf > .workspace-leaf-content > .view-content {
   width: 100% !important;
   height: 100% !important;
   position: absolute !important;
   top: 0;
   left: 0;
+  overflow: hidden;
 }
 
 .dashboard-widget-error {
@@ -159,6 +188,28 @@
 .dashboard-widget-refresh:hover {
   color: var(--text-normal);
   transform: rotate(180deg);
+}
+
+.dashboard-toolbar-sep {
+  width: 1px;
+  height: 20px;
+  background: var(--background-modifier-border);
+  margin: 0 4px;
+  flex-shrink: 0;
+}
+
+.dashboard-toolbar-select {
+  background: var(--interactive-normal);
+  color: var(--text-normal);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  max-width: 180px;
+}
+.dashboard-toolbar-select:hover {
+  background: var(--interactive-hover);
 }
 
 /* ── Settings Tab ─────────────────────────────────────────────────────── */

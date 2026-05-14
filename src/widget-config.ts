@@ -12,19 +12,34 @@ export interface WidgetConfig {
   h: number;
 }
 
-export interface DashboardSettings {
+export interface SavedLayout {
+  id: string;
+  name: string;
   widgets: WidgetConfig[];
-  canvasBackground: string;   // CSS colour string or 'default'
-  altScrollHorizontal: boolean; // Alt+wheel scrolls canvas horizontally
-  altScrollSpeed: number;       // px per wheel tick for alt-scroll
+  zoom?: number;
+  panX?: number;
+  panY?: number;
+  createdAt: number;
+}
+
+export interface DashboardSettings {
+  activeLayoutId: string | null;   // which layout is currently loaded
+  layouts: SavedLayout[];          // all named layouts
+  canvasBackground: string;
+  altScrollHorizontal: boolean;
+  altScrollSpeed: number;
   snapToGrid: boolean;
   gridSize: number;
+  // These remain for runtime only — synced from active layout on load
+  widgets: WidgetConfig[];
   zoom?: number;
   panX?: number;
   panY?: number;
 }
 
 export const DEFAULT_SETTINGS: DashboardSettings = {
+  activeLayoutId: null,
+  layouts: [],
   widgets: [],
   canvasBackground: 'default',
   altScrollHorizontal: true,
