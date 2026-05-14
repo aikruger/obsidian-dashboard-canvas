@@ -74,8 +74,6 @@ export class DashboardView extends ItemView {
       await this.renderWidget(config);
     }
 
-    this.setupLayoutChangeGuard();
-
     console.debug('[Dashboard][View] onOpen complete —', this.plugin.settings.widgets.length, 'widgets rendered');
   }
 
@@ -137,14 +135,21 @@ export class DashboardView extends ItemView {
     const contentFrame = slot.createDiv({ cls: 'dashboard-widget-content' });
 
     // Acquire leaf and mount
-    const { leaf, owned } = await this.widgetManager.getOrCreateLeaf(config);
+    const leaf = await this.widgetManager.getOrCreateLeaf(config);
     if (!leaf) {
-        // Fallback approach if getOrCreateLeaf fails
-        await this.widgetManager.fallbackRenderWidget(config, contentFrame);
+      const reason = !config.filePath
+        ? 'No file configured'
+        : 'Plugin not loaded or file not found';
+      contentFrame.createEl('p', {
+        text: `Widget error: ${reason} (${config.viewType}${config.filePath ? ' — ' + config.filePath : ''})`,
+        cls: 'dashboard-widget-error',
+      });
+      console.warn(`[Dashboard][View] Could not acquire leaf for widget "${config.id}": ${reason}`);
+      return;
     }
 
-    if (leaf) {
-      this.widgetManager.mountLeaf(leaf as any, contentFrame, config.id, owned);
+    const mountSuccess = await this.widgetManager.mountLeaf(leaf as any, contentFrame, config.id, config.label);
+    if (mountSuccess) {
       console.debug(`[Dashboard][View] Widget "${config.id}" leaf mounted successfully`);
     } else {
       const reason = !config.filePath

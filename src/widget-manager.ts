@@ -1,459 +1,255 @@
-import { App, WorkspaceLeaf, WorkspaceParent, TFile } from 'obsidian';
+import { App, WorkspaceLeaf } from 'obsidian';
 import { WidgetConfig } from './widget-config';
 
-/**
- * WorkspaceLeaf has internal .parent (WorkspaceParent) which has
- * .insertChild(index, item) and .removeChild(item) — not in public types
- * but confirmed present via diagnostic.
- */
+// Internal types — not in public Obsidian API but confirmed by diagnostics
 type InternalLeaf = WorkspaceLeaf & {
   parent: InternalParent;
   containerEl: HTMLElement;
+  tabHeaderEl?: HTMLElement;
+  view?: { getDisplayText?: () => string };
 };
 
-type InternalParent = WorkspaceParent & {
+type InternalParent = {
   children: InternalLeaf[];
-  insertChild(index: number, item: unknown): void;
-  removeChild(item: unknown): void;
-  replaceChild(oldChild: unknown, newChild: unknown): void;
   containerEl: HTMLElement;
-  recomputeChildrenDimensions?(): void;
-  updateTabDisplay?(): void;
+  replaceChild(index: number, newLeaf: InternalLeaf): void;
+  insertChild(index: number, leaf: InternalLeaf): void;
+  removeChild(leaf: InternalLeaf): void;
+  recomputeChildrenDimensions(): void;
+  updateTabDisplay(): void;
   lockTabWidths?(): void;
   unlockTabWidths?(): void;
-  selectTab?(leaf: unknown): void;
+  selectTab?(leaf: InternalLeaf): void;
 };
 
 export interface MountRecord {
   leaf: InternalLeaf;
   originalParent: InternalParent;
-  originalIndex: number;
-  owned: boolean;
-  placeholder?: InternalLeaf;
+  placeholder: InternalLeaf;
 }
 
 export class WidgetManager {
   private app: App;
-  public mounts: Map<string, MountRecord> = new Map();
-  public mountedLeaves: Map<string, WorkspaceLeaf> = new Map();
-  private ownedLeaves: Set<string> = new Set();
-  public observers: Map<string, MutationObserver> = new Map();
+  private mounts: Map<string, MountRecord> = new Map();
 
   constructor(app: App) {
     this.app = app;
     console.debug('[Dashboard][WidgetManager] Constructed');
   }
 
-  /**
-   * Get a leaf for the given viewType.
-   * Priority:
-   *   1. Already mounted for this widgetId — return existing
-   *   2. Existing leaf of viewType in workspace — use it
-   *   3. Create a new one in the right sidebar
-   */
-  async getOrCreateLeaf(config: WidgetConfig): Promise<{ leaf: InternalLeaf | null; owned: boolean }> {
+  // ─────────────────────────────────────────────
+  // Acquire a leaf for the given widget config
+  // ─────────────────────────────────────────────
+  async getOrCreateLeaf(config: WidgetConfig): Promise<InternalLeaf | null> {
     console.debug(`[Dashboard][WidgetManager] getOrCreateLeaf: id="${config.id}" viewType="${config.viewType}"`);
 
-    // Already mounted — return existing record
+    // Already mounted — return existing
     if (this.mounts.has(config.id)) {
-      console.debug(`[Dashboard][WidgetManager] Already mounted for "${config.id}", returning existing leaf`);
-      const record = this.mounts.get(config.id)!;
-      return { leaf: record.leaf, owned: record.owned };
+      console.debug(`[Dashboard][WidgetManager] Already mounted "${config.id}", returning existing`);
+      return this.mounts.get(config.id)!.leaf;
     }
 
-    const ws = this.app.workspace;
-
-    // --- CANVAS ---
-    if (config.viewType === 'canvas' && config.filePath) {
-      const file = this.app.vault.getAbstractFileByPath(config.filePath);
-      if (!(file instanceof TFile)) {
-        console.warn(`[Dashboard][WidgetManager] Canvas file not found: "${config.filePath}"`);
-        return { leaf: null, owned: false };
-      }
-      const leaf = ws.getRightLeaf(false) as InternalLeaf | null;
-      if (!leaf) { console.warn('[Dashboard][WidgetManager] Could not get right sidebar leaf for canvas'); return { leaf: null, owned: false }; }
-      await leaf.openFile(file);
-      console.debug(`[Dashboard][WidgetManager] Canvas leaf created for widget "${config.id}"`);
-      return { leaf, owned: true };
+    // Find existing open leaf of this view type
+    const existing = this.app.workspace.getLeavesOfType(config.viewType);
+    if (existing.length > 0 && existing[0] !== undefined) {
+      console.debug(`[Dashboard][WidgetManager] Found ${existing.length} existing leaf(ves) for "${config.viewType}", using first`);
+      return existing[0] as InternalLeaf;
     }
 
-    // --- BASES ---
-    if (config.viewType === 'bases' && config.filePath) {
-      const file = this.app.vault.getAbstractFileByPath(config.filePath);
-      if (!(file instanceof TFile)) {
-        console.warn(`[Dashboard][WidgetManager] Bases file not found: "${config.filePath}"`);
-        return { leaf: null, owned: false };
+    // None open — create one in right sidebar
+    console.debug(`[Dashboard][WidgetManager] No existing leaf for "${config.viewType}", creating in right sidebar`);
+    try {
+      const newLeaf = this.app.workspace.getRightLeaf(false) as InternalLeaf | null;
+      if (!newLeaf) {
+        console.warn(`[Dashboard][WidgetManager] getRightLeaf returned null for "${config.viewType}"`);
+        return null;
       }
-      const leaf = ws.getRightLeaf(false) as InternalLeaf | null;
-      if (!leaf) {
-        console.warn('[Dashboard][WidgetManager] Could not get right sidebar leaf for bases');
-        return { leaf: null, owned: false };
-      }
-      await leaf.openFile(file);
-
-      // Wait for Bases view to initialise — it's async
-      let attempts = 0;
-      while (attempts < 10) {
-        const type = leaf.getViewState().type;
-        if (type === 'bases') {
-          console.debug(`[Dashboard][WidgetManager] Bases leaf ready after ${attempts * 100}ms, widget "${config.id}"`);
-          break;
-        }
-        console.debug(`[Dashboard][WidgetManager] Waiting for bases view on "${config.filePath}" (attempt ${attempts + 1})...`);
-        await sleep(100);
-        attempts++;
-      }
-
-      if (leaf.getViewState().type !== 'bases') {
-        console.warn(`[Dashboard][WidgetManager] Bases view never became ready for "${config.filePath}" — is Bases enabled?`);
-        leaf.detach();
-        return { leaf: null, owned: false };
-      }
-
-      console.debug(`[Dashboard][WidgetManager] Bases leaf created for widget "${config.id}", file="${config.filePath}"`);
-      return { leaf, owned: true };
+      await newLeaf.setViewState({ type: config.viewType, active: false });
+      // Give the plugin one render cycle to initialise its view
+      await sleep(150);
+      console.debug(`[Dashboard][WidgetManager] New leaf created and initialised for "${config.viewType}"`);
+      return newLeaf;
+    } catch (err) {
+      console.error(`[Dashboard][WidgetManager] Error creating leaf for "${config.viewType}":`, err);
+      return null;
     }
-
-    // --- PLUGIN VIEW ---
-    if (config.viewType) {
-      // Find existing
-      const existing = ws.getLeavesOfType(config.viewType);
-      if (existing.length > 0 && existing[0] !== undefined) {
-        const leaf = existing[0] as InternalLeaf;
-        console.debug(`[Dashboard][WidgetManager] Found existing leaf for viewType="${config.viewType}"`, leaf);
-        return { leaf, owned: false };
-      }
-
-      // None found — create in right sidebar
-      console.debug(`[Dashboard][WidgetManager] No existing leaf for "${config.viewType}", creating in right sidebar`);
-      try {
-        const newLeaf = ws.getRightLeaf(false) as InternalLeaf | null;
-        if (!newLeaf) {
-          console.warn(`[Dashboard][WidgetManager] getRightLeaf returned null for "${config.viewType}"`);
-          return { leaf: null, owned: false };
-        }
-        await newLeaf.setViewState({
-          type: config.viewType,
-          active: false,
-          state: (config as any).pluginState ?? {}
-        });
-
-        // Wait for the view to finish initialising (some plugins are async in onOpen)
-        // Poll up to 10 times at 100ms intervals
-        let attempts = 0;
-        while (attempts < 10) {
-          const viewType = newLeaf.getViewState().type;
-          if (viewType === config.viewType) {
-            console.debug(`[Dashboard][WidgetManager] Plugin view "${config.viewType}" ready after ${attempts * 100}ms`);
-            break;
-          }
-          console.debug(`[Dashboard][WidgetManager] Waiting for "${config.viewType}" to initialise (attempt ${attempts + 1})...`);
-          await sleep(100);
-          attempts++;
-        }
-
-        if (newLeaf.getViewState().type !== config.viewType) {
-          console.warn(`[Dashboard][WidgetManager] Plugin view "${config.viewType}" never became ready — leaf type is "${newLeaf.getViewState().type}"`);
-          newLeaf.detach();
-          return { leaf: null, owned: false };
-        }
-
-        console.debug(`[Dashboard][WidgetManager] New leaf created for "${config.viewType}"`);
-        return { leaf: newLeaf, owned: true };
-      } catch (err) {
-        console.error(`[Dashboard][WidgetManager] Error creating leaf for "${config.viewType}":`, err);
-        return { leaf: null, owned: false };
-      }
-    }
-
-    return { leaf: null, owned: false };
   }
 
-  /**
-   * Mount a leaf into a dashboard widget slot.
-   *
-   * CORRECT APPROACH:
-   *   1. Record the leaf's original parent + index in that parent's children array.
-   *   2. Call parent.removeChild(leaf) — cleanly detaches from workspace tree + DOM.
-   *   3. Physically append leaf.containerEl into the slot's content frame.
-   *
-   * We intentionally do NOT call insertChild on the dashboard's container,
-   * because our canvas is not a WorkspaceParent — it's a plain div.
-   * The leaf's workspace parent becomes "orphaned" (null after removeChild),
-   * which is acceptable for the duration of the dashboard session.
-   */
+  // ─────────────────────────────────────────────
+  // Mount a leaf into a dashboard widget slot
+  // ─────────────────────────────────────────────
   async mountLeaf(
     leaf: InternalLeaf,
-    hostEl: HTMLElement,
+    slotContentEl: HTMLElement,
     widgetId: string,
-    owned: boolean
+    widgetLabel: string
   ): Promise<boolean> {
-    console.debug(`[Dashboard][WidgetManager] mountWithPlaceholder: widgetId="${widgetId}"`);
-
-    const originalParent = leaf.parent as InternalParent;
-    const originalIndex = originalParent?.children.indexOf(leaf) ?? 0;
-
-    // ── Create a placeholder leaf ──
-    const ws = this.app.workspace;
-    const internalWs = ws as any;
-    let placeholder: InternalLeaf | null = null;
-
-    try {
-      placeholder = internalWs.createLeafInParent(originalParent, originalIndex);
-      console.debug(`[Dashboard][WidgetManager] Placeholder leaf created at index=${originalIndex}`);
-    } catch (err) {
-      console.warn(`[Dashboard][WidgetManager] createLeafInParent failed — falling back to removeChild`, err);
-      return this._fallbackMountLeaf(leaf, hostEl, widgetId, owned);
-    }
-
-    // ── Give placeholder a visible state ──
-    await placeholder!.setViewState({
-      type: 'empty',
-      state: {}
-    });
-
-    // ── Show "In Dashboard" label on the placeholder tab ──
-    const placeholderContent = placeholder!.containerEl.querySelector('.view-content') as HTMLElement;
-    if (placeholderContent) {
-      placeholderContent.style.cssText = 'display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:13px;';
-      placeholderContent.setText(`📌 ${leaf.view?.getDisplayText?.() ?? widgetId} is open in Dashboard Canvas`);
-    }
-    console.debug(`[Dashboard][WidgetManager] Placeholder content set for "${widgetId}"`);
-
-    // ── Replace target leaf with placeholder in the tab strip ──
-    try {
-      originalParent.replaceChild(leaf, placeholder!);
-      console.debug(`[Dashboard][WidgetManager] replaceChild(original→placeholder) success for "${widgetId}"`);
-      originalParent.recomputeChildrenDimensions?.();
-      originalParent.updateTabDisplay?.();
-    } catch (err) {
-      console.warn(`[Dashboard][WidgetManager] replaceChild failed for "${widgetId}"`, err);
-      placeholder!.detach();
-      return this._fallbackMountLeaf(leaf, hostEl, widgetId, owned);
-    }
-
-    // ── Move real leaf's containerEl into slot ──
-    leaf.containerEl.style.cssText = 'width:100%;height:100%;overflow:auto;position:relative;';
-    hostEl.appendChild(leaf.containerEl);
-
-    // ── Store mount with placeholder reference ──
-    this.mounts.set(widgetId, {
-      leaf,
-      originalParent,
-      originalIndex,
-      owned,
-      placeholder: placeholder!
-    });
-    this.mountedLeaves.set(widgetId, leaf);
-
-    console.debug(`[Dashboard][WidgetManager] mountWithPlaceholder complete for "${widgetId}"`);
-    return true;
-  }
-
-  async _fallbackMountLeaf(
-    leaf: InternalLeaf,
-    hostEl: HTMLElement,
-    widgetId: string,
-    owned: boolean
-  ): Promise<boolean> {
-    console.debug(`[Dashboard][WidgetManager] fallbackMountLeaf: widgetId="${widgetId}"`);
+    console.debug(`[Dashboard][WidgetManager] mountLeaf: widgetId="${widgetId}"`);
 
     if (this.mounts.has(widgetId)) {
-      console.warn(`[Dashboard][WidgetManager] Already mounted "${widgetId}" — skipping`);
+      console.warn(`[Dashboard][WidgetManager] Already mounted "${widgetId}" — skipping duplicate mount`);
       return false;
     }
 
     const originalParent = leaf.parent as InternalParent;
-    const originalIndex = originalParent?.children.indexOf(leaf) ?? 0;
-
-    console.debug(`[Dashboard][WidgetManager] Original parent="${originalParent?.constructor?.name}", index=${originalIndex}, children=${originalParent?.children?.length}`);
-
-    // ── Step 1: Lock tab widths to prevent jank during removal ──
-    if (typeof originalParent?.lockTabWidths === 'function') {
-      originalParent.lockTabWidths();
-      console.debug(`[Dashboard][WidgetManager] lockTabWidths called for "${widgetId}"`);
-    }
-
-    // ── Step 2: Remove from workspace tree ──
-    try {
-      originalParent.removeChild(leaf);
-      console.debug(`[Dashboard][WidgetManager] removeChild success for "${widgetId}"`);
-    } catch (err) {
-      console.warn(`[Dashboard][WidgetManager] removeChild threw for "${widgetId}"`, err);
-      if (typeof originalParent?.unlockTabWidths === 'function') originalParent.unlockTabWidths();
+    if (!originalParent) {
+      console.warn(`[Dashboard][WidgetManager] Leaf for "${widgetId}" has no parent — cannot mount`);
       return false;
     }
 
-    // ── Step 3: Recompute remaining tab dimensions ──
-    if (typeof originalParent?.recomputeChildrenDimensions === 'function') {
+    const leafIdx = originalParent.children.indexOf(leaf);
+    console.debug(`[Dashboard][WidgetManager] "${widgetId}": leaf at idx=${leafIdx}, parent has ${originalParent.children.length} children`);
+
+    // ── Step 1: Insert placeholder at leafIdx (leaf shifts to leafIdx+1) ──
+    const ws = this.app.workspace as any;
+    let placeholder: InternalLeaf;
+    try {
+      placeholder = ws.createLeafInParent(originalParent, leafIdx) as InternalLeaf;
+      console.debug(`[Dashboard][WidgetManager] Placeholder at idx=${originalParent.children.indexOf(placeholder)}, leaf now at idx=${originalParent.children.indexOf(leaf)}`);
+    } catch (err) {
+      console.error(`[Dashboard][WidgetManager] createLeafInParent failed for "${widgetId}":`, err);
+      return false;
+    }
+
+    // ── Step 2: Label the placeholder so user knows where the view went ──
+    try {
+      await placeholder.setViewState({ type: 'empty', state: {} });
+      const viewContent = placeholder.containerEl.querySelector('.view-content') as HTMLElement;
+      if (viewContent) {
+        viewContent.style.cssText = [
+          'display:flex',
+          'align-items:center',
+          'justify-content:center',
+          'flex-direction:column',
+          'gap:8px',
+          'color:var(--text-muted)',
+          'font-size:13px',
+          'text-align:center',
+          'padding:24px',
+        ].join(';');
+        viewContent.innerHTML = `
+          <span style="font-size:28px">📌</span>
+          <strong style="color:var(--text-normal)">${widgetLabel}</strong>
+          <span>Open in Dashboard Canvas</span>
+          <span style="font-size:11px;color:var(--text-faint)">Close the dashboard to return this view here</span>
+        `;
+      }
+      console.debug(`[Dashboard][WidgetManager] Placeholder content set for "${widgetId}"`);
+    } catch (err) {
+      console.warn(`[Dashboard][WidgetManager] Could not set placeholder content for "${widgetId}":`, err);
+      // Non-fatal — placeholder will just be blank
+    }
+
+    // ── Step 3: Remove the real leaf (placeholder holds the tab slot) ──
+    try {
+      originalParent.removeChild(leaf);
       originalParent.recomputeChildrenDimensions();
-      console.debug(`[Dashboard][WidgetManager] recomputeChildrenDimensions called after removeChild for "${widgetId}"`);
-    }
-    if (typeof originalParent?.updateTabDisplay === 'function') {
       originalParent.updateTabDisplay();
-      console.debug(`[Dashboard][WidgetManager] updateTabDisplay called after removeChild for "${widgetId}"`);
-    }
-    if (typeof originalParent?.unlockTabWidths === 'function') {
-      originalParent.unlockTabWidths();
-      console.debug(`[Dashboard][WidgetManager] unlockTabWidths called for "${widgetId}"`);
+      console.debug(`[Dashboard][WidgetManager] removeChild success for "${widgetId}", placeholder at idx=${originalParent.children.indexOf(placeholder)}`);
+    } catch (err) {
+      console.error(`[Dashboard][WidgetManager] removeChild failed for "${widgetId}":`, err);
+      // Clean up placeholder
+      try { placeholder.detach(); } catch {}
+      return false;
     }
 
-    // ── Step 4: Move containerEl into widget slot ──
+    // ── Step 4: Move leaf's containerEl into the widget slot ──
     leaf.containerEl.style.cssText = 'width:100%;height:100%;overflow:auto;position:relative;';
-    hostEl.appendChild(leaf.containerEl);
+    slotContentEl.appendChild(leaf.containerEl);
+    console.debug(`[Dashboard][WidgetManager] containerEl mounted into slot for "${widgetId}"`);
 
-    // ── Step 5: Record mount ──
-    this.mounts.set(widgetId, { leaf, originalParent, originalIndex, owned });
-    this.mountedLeaves.set(widgetId, leaf);
-    console.debug(`[Dashboard][WidgetManager] fallbackMountLeaf complete for "${widgetId}"`);
+    // ── Step 5: Store mount record ──
+    this.mounts.set(widgetId, { leaf, originalParent, placeholder });
+    console.debug(`[Dashboard][WidgetManager] mountLeaf complete for "${widgetId}"`);
     return true;
   }
 
-  /**
-   * Restore a leaf back to its original workspace location.
-   *
-   * Uses insertChild(originalIndex, leaf) to put it back into the correct
-   * WorkspaceParent at the correct tab position — exactly what Obsidian's
-   * drag system does internally.
-   */
+  // ─────────────────────────────────────────────
+  // Restore a leaf back to its original tab slot
+  // ─────────────────────────────────────────────
   restoreLeaf(widgetId: string): void {
     console.debug(`[Dashboard][WidgetManager] restoreLeaf: widgetId="${widgetId}"`);
 
     const record = this.mounts.get(widgetId);
     if (!record) {
-      console.warn(`[Dashboard][WidgetManager] No mount record for "${widgetId}"`);
+      console.warn(`[Dashboard][WidgetManager] No mount record for "${widgetId}" — nothing to restore`);
       return;
     }
 
-    const { leaf, originalParent, originalIndex, owned, placeholder } = record;
+    const { leaf, originalParent, placeholder } = record;
 
-    if (owned) {
-      console.debug(`[Dashboard][WidgetManager] Dashboard-owned leaf — detaching for widget "${widgetId}"`);
-      leaf.detach();
-    } else if (originalParent && typeof originalParent.insertChild === 'function') {
-      try {
-        originalParent.lockTabWidths?.();
+    // Re-read placeholder index dynamically — tabs may have been opened/closed
+    const pidx = originalParent.children.indexOf(placeholder);
+    console.debug(`[Dashboard][WidgetManager] "${widgetId}": placeholder at idx=${pidx}, parent has ${originalParent.children.length} children`);
 
-        if (placeholder) {
-          originalParent.replaceChild(placeholder, leaf);
-          console.debug(`[Dashboard][WidgetManager] replaceChild restore success for "${widgetId}"`);
-        } else {
-          originalParent.insertChild(originalIndex, leaf);
-          console.debug(`[Dashboard][WidgetManager] insertChild restore success for "${widgetId}" at index=${originalIndex}`);
-        }
+    if (pidx === -1) {
+      console.warn(`[Dashboard][WidgetManager] Placeholder no longer in parent for "${widgetId}" — using fallback restore`);
+      this._fallbackRestore(leaf, widgetId);
+      this.mounts.delete(widgetId);
+      return;
+    }
 
-        // ── Step 2: Recompute after restore ──
-        originalParent.recomputeChildrenDimensions?.();
-        originalParent.updateTabDisplay?.();
-        originalParent.unlockTabWidths?.();
+    try {
+      // replaceChild(index, newLeaf): replaces placeholder at pidx with real leaf
+      // internally calls placeholder.setParent(null) — orphans placeholder
+      originalParent.replaceChild(pidx, leaf);
+      originalParent.recomputeChildrenDimensions();
+      originalParent.updateTabDisplay();
 
-        // ── Step 3: Make the restored tab visible ──
-        if (typeof originalParent.selectTab === 'function') {
-          originalParent.selectTab(leaf);
-          console.debug(`[Dashboard][WidgetManager] selectTab called for "${widgetId}"`);
-        }
+      // Remove orphaned placeholder DOM (setParent(null) was called but DOM lingers)
+      placeholder.containerEl?.remove();
 
-      } catch (err) {
-        console.warn(`[Dashboard][WidgetManager] replaceChild/insertChild failed for "${widgetId}"`, err);
-        originalParent.unlockTabWidths?.();
-        this._fallbackRestore(leaf, widgetId);
-      }
-    } else {
-      console.warn(`[Dashboard][WidgetManager] Original parent gone for "${widgetId}" — fallback`);
+      // Restore focus without stealing keyboard
+      this.app.workspace.setActiveLeaf(leaf, { focus: false });
+
+      console.debug(`[Dashboard][WidgetManager] restoreLeaf complete for "${widgetId}" at idx=${pidx}`);
+    } catch (err) {
+      console.error(`[Dashboard][WidgetManager] replaceChild failed for "${widgetId}":`, err);
       this._fallbackRestore(leaf, widgetId);
     }
 
     this.mounts.delete(widgetId);
-    this.mountedLeaves.delete(widgetId);
-    console.debug(`[Dashboard][WidgetManager] restoreLeaf complete for "${widgetId}"`);
   }
 
   private _fallbackRestore(leaf: InternalLeaf, widgetId: string): void {
     console.debug(`[Dashboard][WidgetManager] _fallbackRestore for "${widgetId}"`);
     try {
-      // Create a fresh leaf in right sidebar and swap containerEl back
-      const ws = this.app.workspace;
-      const rightLeaf = ws.getRightLeaf(false) as InternalLeaf | null;
+      const rightLeaf = this.app.workspace.getRightLeaf(false) as InternalLeaf | null;
       if (rightLeaf?.parent) {
         const rp = rightLeaf.parent as InternalParent;
         rp.insertChild(0, leaf);
         rp.recomputeChildrenDimensions?.();
         rp.updateTabDisplay?.();
-        console.debug(`[Dashboard][WidgetManager] Fallback: inserted into right sidebar for "${widgetId}"`);
+        console.debug(`[Dashboard][WidgetManager] Fallback: restored "${widgetId}" to right sidebar`);
       } else {
         leaf.detach();
-        console.debug(`[Dashboard][WidgetManager] Fallback: detached leaf for "${widgetId}"`);
+        console.debug(`[Dashboard][WidgetManager] Fallback: detached "${widgetId}"`);
       }
     } catch (err) {
-      console.error(`[Dashboard][WidgetManager] _fallbackRestore threw for "${widgetId}"`, err);
+      console.error(`[Dashboard][WidgetManager] _fallbackRestore threw for "${widgetId}":`, err);
       try { leaf.detach(); } catch {}
     }
   }
 
   restoreAll(): void {
-    console.debug(`[Dashboard][WidgetManager] restoreAll — ${this.mounts.size} widgets to restore`);
+    const count = this.mounts.size;
+    console.debug(`[Dashboard][WidgetManager] restoreAll — restoring ${count} widget(s)`);
     for (const widgetId of Array.from(this.mounts.keys())) {
       this.restoreLeaf(widgetId);
     }
-    console.debug('[Dashboard][WidgetManager] restoreAll complete');
+    console.debug(`[Dashboard][WidgetManager] restoreAll complete`);
   }
 
   getMountedLeaf(widgetId: string): InternalLeaf | null {
     return this.mounts.get(widgetId)?.leaf ?? null;
   }
 
-  getMounts() {
-      return this.mounts;
+  isMounted(widgetId: string): boolean {
+    return this.mounts.has(widgetId);
   }
 
-  async fallbackRenderWidget(config: WidgetConfig, hostEl: HTMLElement): Promise<boolean> {
-    console.debug(`[Dashboard][WidgetManager] FALLBACK render for widget "${config.id}", viewType="${config.viewType}"`);
-
-    // For markdown-type widgets, use the vault + MarkdownRenderer pipeline
-    if (config.viewType === 'markdown' && config.filePath) {
-      const file = this.app.vault.getAbstractFileByPath(config.filePath);
-      if (!file) {
-        console.warn(`[Dashboard][WidgetManager] File not found: "${config.filePath}"`);
-        return false;
-      }
-
-      try {
-        const { MarkdownRenderer } = require('obsidian');
-        const content = await this.app.vault.cachedRead(file as any);
-
-        console.debug(`[Dashboard][WidgetManager] Rendering markdown for "${config.filePath}", length=${content.length}`);
-
-        hostEl.empty();
-        const renderEl = hostEl.createDiv({ cls: 'dashboard-markdown-render' });
-
-        await MarkdownRenderer.render(
-          this.app,
-          content,
-          renderEl,
-          (file as any).path,
-          null as any
-        );
-
-        console.debug(`[Dashboard][WidgetManager] Markdown render complete for "${config.filePath}"`);
-        return true;
-      } catch (err) {
-        console.error(`[Dashboard][WidgetManager] Markdown render FAILED:`, err);
-        return false;
-      }
-    }
-
-    // For other view types, show a "click to open in sidebar" button
-    console.debug(`[Dashboard][WidgetManager] No fallback available for viewType="${config.viewType}" — showing launcher`);
-    const launchBtn = hostEl.createEl('button', {
-      text: `▶ Open ${config.label}`,
-      cls: 'dashboard-launch-btn'
-    });
-    launchBtn.addEventListener('click', () => {
-      console.debug(`[Dashboard][WidgetManager] Launch button clicked for "${config.viewType}"`);
-      // Use standard cast since config doesn't have an openCommandId currently in our WidgetConfig.
-      // this.app.commands.executeCommandById(config.openCommandId || '');
-    });
-    return false;
+  getMounts() {
+    return this.mounts;
   }
 }
 
