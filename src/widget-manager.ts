@@ -15,7 +15,13 @@ type InternalParent = WorkspaceParent & {
   children: InternalLeaf[];
   insertChild(index: number, item: unknown): void;
   removeChild(item: unknown): void;
+  replaceChild(oldChild: unknown, newChild: unknown): void;
   containerEl: HTMLElement;
+  recomputeChildrenDimensions?(): void;
+  updateTabDisplay?(): void;
+  lockTabWidths?(): void;
+  unlockTabWidths?(): void;
+  selectTab?(leaf: unknown): void;
 };
 
 export interface MountRecord {
@@ -23,12 +29,15 @@ export interface MountRecord {
   originalParent: InternalParent;
   originalIndex: number;
   owned: boolean;
+  placeholder?: InternalLeaf;
 }
 
 export class WidgetManager {
   private app: App;
-  // widgetId → mount record (where the leaf came from)
-  private mounts: Map<string, MountRecord> = new Map();
+  public mounts: Map<string, MountRecord> = new Map();
+  public mountedLeaves: Map<string, WorkspaceLeaf> = new Map();
+  private ownedLeaves: Set<string> = new Set();
+  public observers: Map<string, MutationObserver> = new Map();
 
   constructor(app: App) {
     this.app = app;
@@ -173,46 +182,130 @@ export class WidgetManager {
    * The leaf's workspace parent becomes "orphaned" (null after removeChild),
    * which is acceptable for the duration of the dashboard session.
    */
-  mountLeaf(leaf: InternalLeaf, slotContentEl: HTMLElement, widgetId: string, owned: boolean): boolean {
-    console.debug(`[Dashboard][WidgetManager] mountLeaf: widgetId="${widgetId}"`);
+  async mountLeaf(
+    leaf: InternalLeaf,
+    hostEl: HTMLElement,
+    widgetId: string,
+    owned: boolean
+  ): Promise<boolean> {
+    console.debug(`[Dashboard][WidgetManager] mountWithPlaceholder: widgetId="${widgetId}"`);
+
+    const originalParent = leaf.parent as InternalParent;
+    const originalIndex = originalParent?.children.indexOf(leaf) ?? 0;
+
+    // ── Create a placeholder leaf ──
+    const ws = this.app.workspace;
+    const internalWs = ws as any;
+    let placeholder: InternalLeaf | null = null;
+
+    try {
+      placeholder = internalWs.createLeafInParent(originalParent, originalIndex);
+      console.debug(`[Dashboard][WidgetManager] Placeholder leaf created at index=${originalIndex}`);
+    } catch (err) {
+      console.warn(`[Dashboard][WidgetManager] createLeafInParent failed — falling back to removeChild`, err);
+      return this._fallbackMountLeaf(leaf, hostEl, widgetId, owned);
+    }
+
+    // ── Give placeholder a visible state ──
+    await placeholder!.setViewState({
+      type: 'empty',
+      state: {}
+    });
+
+    // ── Show "In Dashboard" label on the placeholder tab ──
+    const placeholderContent = placeholder!.containerEl.querySelector('.view-content') as HTMLElement;
+    if (placeholderContent) {
+      placeholderContent.style.cssText = 'display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:13px;';
+      placeholderContent.setText(`📌 ${leaf.view?.getDisplayText?.() ?? widgetId} is open in Dashboard Canvas`);
+    }
+    console.debug(`[Dashboard][WidgetManager] Placeholder content set for "${widgetId}"`);
+
+    // ── Replace target leaf with placeholder in the tab strip ──
+    try {
+      originalParent.replaceChild(leaf, placeholder!);
+      console.debug(`[Dashboard][WidgetManager] replaceChild(original→placeholder) success for "${widgetId}"`);
+      originalParent.recomputeChildrenDimensions?.();
+      originalParent.updateTabDisplay?.();
+    } catch (err) {
+      console.warn(`[Dashboard][WidgetManager] replaceChild failed for "${widgetId}"`, err);
+      placeholder!.detach();
+      return this._fallbackMountLeaf(leaf, hostEl, widgetId, owned);
+    }
+
+    // ── Move real leaf's containerEl into slot ──
+    leaf.containerEl.style.cssText = 'width:100%;height:100%;overflow:auto;position:relative;';
+    hostEl.appendChild(leaf.containerEl);
+
+    // ── Store mount with placeholder reference ──
+    this.mounts.set(widgetId, {
+      leaf,
+      originalParent,
+      originalIndex,
+      owned,
+      placeholder: placeholder!
+    });
+    this.mountedLeaves.set(widgetId, leaf);
+
+    console.debug(`[Dashboard][WidgetManager] mountWithPlaceholder complete for "${widgetId}"`);
+    return true;
+  }
+
+  async _fallbackMountLeaf(
+    leaf: InternalLeaf,
+    hostEl: HTMLElement,
+    widgetId: string,
+    owned: boolean
+  ): Promise<boolean> {
+    console.debug(`[Dashboard][WidgetManager] fallbackMountLeaf: widgetId="${widgetId}"`);
 
     if (this.mounts.has(widgetId)) {
-      console.warn(`[Dashboard][WidgetManager] Widget "${widgetId}" already mounted — skipping`);
+      console.warn(`[Dashboard][WidgetManager] Already mounted "${widgetId}" — skipping`);
       return false;
     }
 
     const originalParent = leaf.parent as InternalParent;
-    if (!originalParent) {
-      console.warn(`[Dashboard][WidgetManager] Leaf for "${widgetId}" has no parent — may already be detached`);
+    const originalIndex = originalParent?.children.indexOf(leaf) ?? 0;
+
+    console.debug(`[Dashboard][WidgetManager] Original parent="${originalParent?.constructor?.name}", index=${originalIndex}, children=${originalParent?.children?.length}`);
+
+    // ── Step 1: Lock tab widths to prevent jank during removal ──
+    if (typeof originalParent?.lockTabWidths === 'function') {
+      originalParent.lockTabWidths();
+      console.debug(`[Dashboard][WidgetManager] lockTabWidths called for "${widgetId}"`);
     }
 
-    // Record original position
-    const originalIndex = originalParent && originalParent.children
-      ? originalParent.children.indexOf(leaf)
-      : 0;
-
-    console.debug(`[Dashboard][WidgetManager] Original parent for "${widgetId}":`, originalParent, `index=${originalIndex}`);
-
-    // Detach from workspace tree properly
-    if (originalParent && typeof originalParent.removeChild === 'function') {
-      console.debug(`[Dashboard][WidgetManager] Calling parent.removeChild for "${widgetId}"`);
-      try {
-        originalParent.removeChild(leaf);
-        console.debug(`[Dashboard][WidgetManager] removeChild success for "${widgetId}"`);
-      } catch (err) {
-        console.warn(`[Dashboard][WidgetManager] removeChild threw for "${widgetId}" — falling back to raw DOM`, err);
-      }
-    } else {
-      console.warn(`[Dashboard][WidgetManager] No removeChild available for "${widgetId}", using raw DOM only`);
+    // ── Step 2: Remove from workspace tree ──
+    try {
+      originalParent.removeChild(leaf);
+      console.debug(`[Dashboard][WidgetManager] removeChild success for "${widgetId}"`);
+    } catch (err) {
+      console.warn(`[Dashboard][WidgetManager] removeChild threw for "${widgetId}"`, err);
+      if (typeof originalParent?.unlockTabWidths === 'function') originalParent.unlockTabWidths();
+      return false;
     }
 
-    // Move the containerEl into our slot
-    slotContentEl.appendChild(leaf.containerEl);
+    // ── Step 3: Recompute remaining tab dimensions ──
+    if (typeof originalParent?.recomputeChildrenDimensions === 'function') {
+      originalParent.recomputeChildrenDimensions();
+      console.debug(`[Dashboard][WidgetManager] recomputeChildrenDimensions called after removeChild for "${widgetId}"`);
+    }
+    if (typeof originalParent?.updateTabDisplay === 'function') {
+      originalParent.updateTabDisplay();
+      console.debug(`[Dashboard][WidgetManager] updateTabDisplay called after removeChild for "${widgetId}"`);
+    }
+    if (typeof originalParent?.unlockTabWidths === 'function') {
+      originalParent.unlockTabWidths();
+      console.debug(`[Dashboard][WidgetManager] unlockTabWidths called for "${widgetId}"`);
+    }
+
+    // ── Step 4: Move containerEl into widget slot ──
     leaf.containerEl.style.cssText = 'width:100%;height:100%;overflow:auto;position:relative;';
+    hostEl.appendChild(leaf.containerEl);
 
-    // Store the mount record
+    // ── Step 5: Record mount ──
     this.mounts.set(widgetId, { leaf, originalParent, originalIndex, owned });
-    console.debug(`[Dashboard][WidgetManager] mountLeaf complete for "${widgetId}"`);
+    this.mountedLeaves.set(widgetId, leaf);
+    console.debug(`[Dashboard][WidgetManager] fallbackMountLeaf complete for "${widgetId}"`);
     return true;
   }
 
@@ -232,39 +325,69 @@ export class WidgetManager {
       return;
     }
 
-    const { leaf, originalParent, originalIndex, owned } = record;
+    const { leaf, originalParent, originalIndex, owned, placeholder } = record;
 
     if (owned) {
       console.debug(`[Dashboard][WidgetManager] Dashboard-owned leaf — detaching for widget "${widgetId}"`);
       leaf.detach();
     } else if (originalParent && typeof originalParent.insertChild === 'function') {
       try {
-        originalParent.insertChild(originalIndex, leaf);
-        console.debug(`[Dashboard][WidgetManager] insertChild restore success for "${widgetId}" at index ${originalIndex}`);
+        originalParent.lockTabWidths?.();
+
+        if (placeholder) {
+          originalParent.replaceChild(placeholder, leaf);
+          console.debug(`[Dashboard][WidgetManager] replaceChild restore success for "${widgetId}"`);
+        } else {
+          originalParent.insertChild(originalIndex, leaf);
+          console.debug(`[Dashboard][WidgetManager] insertChild restore success for "${widgetId}" at index=${originalIndex}`);
+        }
+
+        // ── Step 2: Recompute after restore ──
+        originalParent.recomputeChildrenDimensions?.();
+        originalParent.updateTabDisplay?.();
+        originalParent.unlockTabWidths?.();
+
+        // ── Step 3: Make the restored tab visible ──
+        if (typeof originalParent.selectTab === 'function') {
+          originalParent.selectTab(leaf);
+          console.debug(`[Dashboard][WidgetManager] selectTab called for "${widgetId}"`);
+        }
+
       } catch (err) {
-        console.warn(`[Dashboard][WidgetManager] insertChild failed for "${widgetId}" — falling back to detach`, err);
-        leaf.detach();
+        console.warn(`[Dashboard][WidgetManager] replaceChild/insertChild failed for "${widgetId}"`, err);
+        originalParent.unlockTabWidths?.();
+        this._fallbackRestore(leaf, widgetId);
       }
     } else {
-      // Parent is gone (e.g. user closed the pane) — put leaf in right sidebar
-      console.warn(`[Dashboard][WidgetManager] Original parent gone for "${widgetId}" — restoring to right sidebar`);
-      const fallbackLeaf = this.app.workspace.getRightLeaf(false) as InternalLeaf | null;
-      if (fallbackLeaf && fallbackLeaf.parent) {
-        const fp = fallbackLeaf.parent as InternalParent;
-        try {
-          fp.insertChild(0, leaf);
-          console.debug(`[Dashboard][WidgetManager] Fallback restore to right sidebar for "${widgetId}"`);
-        } catch (err2) {
-          console.error(`[Dashboard][WidgetManager] Fallback insertChild also failed for "${widgetId}"`, err2);
-          leaf.detach();
-        }
-      } else {
-        leaf.detach();
-      }
+      console.warn(`[Dashboard][WidgetManager] Original parent gone for "${widgetId}" — fallback`);
+      this._fallbackRestore(leaf, widgetId);
     }
 
     this.mounts.delete(widgetId);
+    this.mountedLeaves.delete(widgetId);
     console.debug(`[Dashboard][WidgetManager] restoreLeaf complete for "${widgetId}"`);
+  }
+
+  private _fallbackRestore(leaf: InternalLeaf, widgetId: string): void {
+    console.debug(`[Dashboard][WidgetManager] _fallbackRestore for "${widgetId}"`);
+    try {
+      // Create a fresh leaf in right sidebar and swap containerEl back
+      const ws = this.app.workspace;
+      const rightLeaf = ws.getRightLeaf(false) as InternalLeaf | null;
+      if (rightLeaf?.parent) {
+        const rp = rightLeaf.parent as InternalParent;
+        rp.insertChild(0, leaf);
+        rp.recomputeChildrenDimensions?.();
+        rp.updateTabDisplay?.();
+        console.debug(`[Dashboard][WidgetManager] Fallback: inserted into right sidebar for "${widgetId}"`);
+      } else {
+        leaf.detach();
+        console.debug(`[Dashboard][WidgetManager] Fallback: detached leaf for "${widgetId}"`);
+      }
+    } catch (err) {
+      console.error(`[Dashboard][WidgetManager] _fallbackRestore threw for "${widgetId}"`, err);
+      try { leaf.detach(); } catch {}
+    }
   }
 
   restoreAll(): void {
