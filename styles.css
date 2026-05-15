@@ -1,8 +1,338 @@
-/*
+.dashboard-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background: var(--background-primary);
+}
 
-This CSS file will be included with your plugin, and
-available in the app when your plugin is enabled.
+.dashboard-toolbar {
+  display: flex;
+  flex-wrap: wrap;          /* ADD THIS — prevents clipping */
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--background-secondary);
+  border-bottom: 1px solid var(--background-modifier-border);
+  flex-shrink: 0;
+  z-index: 100;
+  align-items: center;
+}
 
-If your plugin does not need CSS, delete this file.
+.dashboard-toolbar-btn {
+  background: var(--interactive-normal);
+  color: var(--text-normal);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.dashboard-toolbar-btn:hover { background: var(--interactive-hover); }
 
-*/
+.dashboard-zoom-btn { min-width: 28px; text-align: center; font-weight: bold; }
+
+.dashboard-viewport {
+  position: relative;
+  flex: 1;
+  overflow: hidden;
+  cursor: grab;
+}
+.dashboard-viewport.dashboard-panning { cursor: grabbing; }
+
+.dashboard-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 4000px;
+  height: 3000px;
+  transform-origin: 0 0;
+  background-image: radial-gradient(circle, var(--background-modifier-border) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+.dashboard-widget-slot {
+  position: absolute;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  overflow: hidden;         /* REVERT to hidden — required for swimlane clipping */
+  display: flex;
+  flex-direction: column;
+  background: var(--background-secondary);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+}
+
+.dashboard-widget-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: var(--background-secondary-alt);
+  border-bottom: 1px solid var(--background-modifier-border);
+  flex-shrink: 0;
+  font-size: 12px;
+  cursor: default;
+  user-select: none;
+}
+
+.dashboard-widget-handle {
+  cursor: grab;
+  padding: 2px 4px;
+  color: var(--text-faint);
+  font-size: 14px;
+}
+.dashboard-widget-handle:active { cursor: grabbing; }
+
+.dashboard-widget-label {
+  flex: 1;
+  min-width: 0;             /* ADD THIS — prevents label from pushing buttons off */
+  font-weight: 500;
+  color: var(--text-normal);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dashboard-widget-close {
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 4px;
+  border-radius: 3px;
+}
+.dashboard-widget-close:hover {
+  background: var(--background-modifier-error);
+  color: var(--text-on-accent);
+}
+
+.dashboard-widget-content {
+  flex: 1;
+  overflow: auto;
+  position: relative;
+  /* REMOVE clip-path entirely — it breaks position:sticky on Tasks swimlane headers */
+  /* REMOVE isolation: isolate — same reason */
+}
+
+/* Tasks plugin: board-view column headers (swimlane headers) */
+.dashboard-widget-content .tasks-layout-table__column-header,
+.dashboard-widget-content .tasks-query-result__group-heading,
+/* Kanban plugin column headers */
+.dashboard-widget-content .kanban-plugin__lane-title,
+/* Generic fallback for heading rows */
+.dashboard-widget-content thead th {
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 2 !important;
+  background: var(--background-secondary) !important;
+}
+
+/* Tasks board view: ensure the horizontal swimlane container scrolls within the widget */
+.dashboard-widget-content .tasks-layout-table,
+.dashboard-widget-content .kanban-plugin__board {
+  overflow-x: auto !important;
+  overflow-y: auto !important;
+  height: 100% !important;
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: flex-start !important;
+}
+
+/* Each swim lane column must not shrink */
+.dashboard-widget-content .tasks-layout-table__column,
+.dashboard-widget-content .kanban-plugin__lane {
+  flex-shrink: 0 !important;
+  min-width: 220px !important;
+  overflow-y: auto !important;
+  max-height: 100% !important;
+}
+
+.dashboard-widget-content .fc {
+  height: 100% !important;
+  display: flex;
+  flex-direction: column;
+}
+
+.dashboard-widget-content .fc-view-harness {
+  height: 100% !important;
+  flex: 1 1 auto !important;
+}
+
+/* ── Leaf containment: preserve the leaf's own flex layout ─────────────────
+   The leaf has: workspace-leaf-header (action buttons) + workspace-leaf-content (view).
+   We must NOT set position:absolute or override overflow on these elements — doing so
+   collapses the header and hides search/settings/refresh buttons.
+   Instead we make the leaf fill its slot as a flex column, same as it does in sidebars. */
+
+.dashboard-widget-content > .workspace-leaf {
+  width: 100% !important;
+  height: 100% !important;
+  /* Use flex column so header + content stack naturally */
+  display: flex !important;
+  flex-direction: column !important;
+  /* Do NOT set position:absolute — let it be position:relative (default) */
+  overflow: visible !important;   /* was: hidden — was clipping search dropdowns */
+}
+
+/* Move the clip to view-content only, not the whole leaf */
+.dashboard-widget-content > .workspace-leaf > .workspace-leaf-content {
+  overflow: hidden !important;
+}
+
+/* The leaf header must be visible and auto-sized (not stretched) */
+.dashboard-widget-content > .workspace-leaf > .workspace-leaf-header {
+  flex-shrink: 0 !important;
+  width: 100% !important;
+  /* Ensure action buttons in the header are not clipped */
+  overflow: visible !important;
+  /* Remove any display:none that themes might inject for sidebar leaves */
+  display: flex !important;
+}
+
+/* Add this rule */
+.dashboard-widget-content > .workspace-leaf > .workspace-leaf-header .view-header {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  overflow: visible !important;
+  width: 100% !important;
+  min-width: 0 !important;
+}
+
+/* View-content fills remaining height below the header */
+.dashboard-widget-content > .workspace-leaf > .workspace-leaf-content {
+  flex: 1 !important;
+  width: 100% !important;
+  min-height: 0 !important;   /* critical: prevents flex blowout */
+  /* Do NOT set position:absolute */
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+/* The actual plugin view fills view-content */
+.dashboard-widget-content > .workspace-leaf > .workspace-leaf-content > .view-content {
+  flex: 1 !important;
+  width: 100% !important;
+  min-height: 0 !important;
+  overflow: auto !important;
+  /* Do NOT set position:absolute — this is what was hiding the header */
+}
+
+/* Collapse the title text to zero width but keep it in the flex flow
+   so .view-actions still gets its natural space */
+.dashboard-widget-content .workspace-leaf-header .view-header-title-container {
+  width: 0 !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  flex: 0 0 0 !important;
+  /* Do NOT use display:none — that removes it from flex flow entirely */
+}
+
+/* Make the actions row expand to fill available header space */
+.dashboard-widget-content .workspace-leaf-header .view-actions {
+  display: flex !important;
+  flex: 1 1 auto !important;      /* expand into the space freed by title */
+  justify-content: flex-start !important;
+  gap: 2px !important;
+  overflow: visible !important;
+}
+
+/* Ensure individual action buttons are not hidden */
+.dashboard-widget-content .workspace-leaf-header .view-action {
+  display: flex !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+
+.dashboard-widget-error {
+  color: var(--text-error);
+  padding: 12px;
+  font-size: 13px;
+}
+
+.dashboard-widget-slot::after {
+  content: '';
+  position: absolute;
+  bottom: 2px;
+  right: 2px;
+  width: 12px;
+  height: 12px;
+  background: var(--text-faint);
+  clip-path: polygon(100% 0, 100% 100%, 0 100%);
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.dashboard-suggest-path {
+  color: var(--text-muted);
+  display: block;
+  font-size: 11px;
+}
+
+/* Refresh button on each widget title bar */
+.dashboard-widget-refresh {
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 4px;
+  border-radius: 3px;
+  line-height: 1;
+  transition: color 120ms ease, transform 300ms ease;
+}
+.dashboard-widget-refresh:hover {
+  color: var(--text-normal);
+  transform: rotate(180deg);
+}
+
+.dashboard-toolbar-sep {
+  width: 1px;
+  height: 20px;
+  background: var(--background-modifier-border);
+  margin: 0 4px;
+  flex-shrink: 0;
+}
+
+.dashboard-toolbar-select {
+  background: var(--interactive-normal);
+  color: var(--text-normal);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  max-width: 180px;
+}
+.dashboard-toolbar-select:hover {
+  background: var(--interactive-hover);
+}
+
+/* ── Settings Tab ─────────────────────────────────────────────────────── */
+
+/* Section headings inside the settings tab */
+.dashboard-settings h3 {
+  margin-top: 1.2em;
+  margin-bottom: 0.4em;
+  font-size: var(--font-ui-medium, 14px);
+  font-weight: 600;
+  color: var(--text-normal);
+  border-bottom: 1px solid var(--background-modifier-border);
+  padding-bottom: 4px;
+}
+
+/* Make the colour picker + reset button sit on one row */
+.dashboard-settings .setting-item-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Reset button sizing */
+.dashboard-settings .setting-item-control button {
+  font-size: 12px;
+  padding: 3px 10px;
+}
