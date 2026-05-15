@@ -159,15 +159,61 @@
   flex: 1 1 auto !important;
 }
 
-.dashboard-widget-content > .workspace-leaf,
-.dashboard-widget-content > .workspace-leaf > .workspace-leaf-content,
-.dashboard-widget-content > .workspace-leaf > .workspace-leaf-content > .view-content {
+/* ── Leaf containment: preserve the leaf's own flex layout ─────────────────
+   The leaf has: workspace-leaf-header (action buttons) + workspace-leaf-content (view).
+   We must NOT set position:absolute or override overflow on these elements — doing so
+   collapses the header and hides search/settings/refresh buttons.
+   Instead we make the leaf fill its slot as a flex column, same as it does in sidebars. */
+
+.dashboard-widget-content > .workspace-leaf {
   width: 100% !important;
   height: 100% !important;
-  position: absolute !important;
-  top: 0;
-  left: 0;
-  overflow: auto;
+  /* Use flex column so header + content stack naturally */
+  display: flex !important;
+  flex-direction: column !important;
+  /* Do NOT set position:absolute — let it be position:relative (default) */
+  overflow: hidden !important;
+}
+
+/* The leaf header must be visible and auto-sized (not stretched) */
+.dashboard-widget-content > .workspace-leaf > .workspace-leaf-header {
+  flex-shrink: 0 !important;
+  width: 100% !important;
+  /* Ensure action buttons in the header are not clipped */
+  overflow: visible !important;
+  /* Remove any display:none that themes might inject for sidebar leaves */
+  display: flex !important;
+}
+
+/* View-content fills remaining height below the header */
+.dashboard-widget-content > .workspace-leaf > .workspace-leaf-content {
+  flex: 1 !important;
+  width: 100% !important;
+  min-height: 0 !important;   /* critical: prevents flex blowout */
+  overflow: hidden !important;
+  /* Do NOT set position:absolute */
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+/* The actual plugin view fills view-content */
+.dashboard-widget-content > .workspace-leaf > .workspace-leaf-content > .view-content {
+  flex: 1 !important;
+  width: 100% !important;
+  min-height: 0 !important;
+  overflow: auto !important;
+  /* Do NOT set position:absolute — this is what was hiding the header */
+}
+
+/* Hide the tab strip (file name row) inside dashboard widgets —
+   the dashboard widget titlebar already shows the label.
+   Keep .view-actions (search, settings, refresh buttons). */
+.dashboard-widget-content .workspace-leaf-header .view-header-title-container {
+  display: none !important;
+}
+/* Ensure the action buttons row stays visible */
+.dashboard-widget-content .workspace-leaf-header .view-actions {
+  display: flex !important;
 }
 
 .dashboard-widget-error {

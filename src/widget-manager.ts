@@ -155,9 +155,17 @@ export class WidgetManager {
     }
 
     // ── Step 4: Move leaf's containerEl into the widget slot ──
-    leaf.containerEl.style.cssText = 'width:100%;height:100%;overflow:auto;position:relative;';
+    // DO NOT override cssText — Obsidian's leaf uses internal flex layout that positions
+    // the header and view-content. Overriding with position:relative and overflow:auto
+    // destroys that layout and hides the header (where search/settings/refresh live).
+    // Instead, only ensure the leaf fills its slot container.
+    leaf.containerEl.style.width = '100%';
+    leaf.containerEl.style.height = '100%';
+    // Remove any leftover position override from previous attempts
+    leaf.containerEl.style.position = '';
+    leaf.containerEl.style.overflow = '';
     slotContentEl.appendChild(leaf.containerEl);
-    console.debug(`[Dashboard][WidgetManager] containerEl mounted into slot for "${widgetId}"`);
+    console.debug(`[Dashboard][WidgetManager] containerEl mounted into slot for "${widgetId}" (leaf header preserved)`);
 
     // ── Step 5: Store mount record ──
     this.mounts.set(widgetId, { leaf, originalParent, placeholder });
@@ -177,7 +185,7 @@ export class WidgetManager {
           }
         }
         // FullCalendar-specific
-        const cal = view?.calendar ?? view?.fullCalendar ?? view?.calendarEl?._calendar;
+        const cal = view?.calendar ?? view?.fullCalendar ?? view?._calendar ?? view?.fullCalendarStore?.calendar ?? null;
         if (cal) {
           try { cal.updateSize?.(); } catch {}
         }
