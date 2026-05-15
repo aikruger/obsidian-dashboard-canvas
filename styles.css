@@ -172,6 +172,11 @@
   display: flex !important;
   flex-direction: column !important;
   /* Do NOT set position:absolute — let it be position:relative (default) */
+  overflow: visible !important;   /* was: hidden — was clipping search dropdowns */
+}
+
+/* Move the clip to view-content only, not the whole leaf */
+.dashboard-widget-content > .workspace-leaf > .workspace-leaf-content {
   overflow: hidden !important;
 }
 
@@ -185,12 +190,21 @@
   display: flex !important;
 }
 
+/* Add this rule */
+.dashboard-widget-content > .workspace-leaf > .workspace-leaf-header .view-header {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  overflow: visible !important;
+  width: 100% !important;
+  min-width: 0 !important;
+}
+
 /* View-content fills remaining height below the header */
 .dashboard-widget-content > .workspace-leaf > .workspace-leaf-content {
   flex: 1 !important;
   width: 100% !important;
   min-height: 0 !important;   /* critical: prevents flex blowout */
-  overflow: hidden !important;
   /* Do NOT set position:absolute */
   display: flex !important;
   flex-direction: column !important;
@@ -205,15 +219,32 @@
   /* Do NOT set position:absolute — this is what was hiding the header */
 }
 
-/* Hide the tab strip (file name row) inside dashboard widgets —
-   the dashboard widget titlebar already shows the label.
-   Keep .view-actions (search, settings, refresh buttons). */
+/* Collapse the title text to zero width but keep it in the flex flow
+   so .view-actions still gets its natural space */
 .dashboard-widget-content .workspace-leaf-header .view-header-title-container {
-  display: none !important;
+  width: 0 !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  flex: 0 0 0 !important;
+  /* Do NOT use display:none — that removes it from flex flow entirely */
 }
-/* Ensure the action buttons row stays visible */
+
+/* Make the actions row expand to fill available header space */
 .dashboard-widget-content .workspace-leaf-header .view-actions {
   display: flex !important;
+  flex: 1 1 auto !important;      /* expand into the space freed by title */
+  justify-content: flex-start !important;
+  gap: 2px !important;
+  overflow: visible !important;
+}
+
+/* Ensure individual action buttons are not hidden */
+.dashboard-widget-content .workspace-leaf-header .view-action {
+  display: flex !important;
+  visibility: visible !important;
+  opacity: 1 !important;
 }
 
 .dashboard-widget-error {

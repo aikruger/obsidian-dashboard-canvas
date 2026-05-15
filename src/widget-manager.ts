@@ -26,6 +26,8 @@ export interface MountRecord {
   leaf: InternalLeaf;
   originalParent: InternalParent;
   placeholder: InternalLeaf;
+  tabGroupEl?: HTMLElement;
+  originalTabGroupNext?: ChildNode | null;
 }
 
 export class WidgetManager {
@@ -85,7 +87,7 @@ export class WidgetManager {
     widgetId: string,
     widgetLabel: string
   ): Promise<boolean> {
-    console.debug(`[Dashboard][WidgetManager] mountLeaf: widgetId="${widgetId}"`);
+    console.debug(`[Dashboard][WidgetManager] mountLeaf (workspace-native): widgetId="${widgetId}"`);
 
     if (this.mounts.has(widgetId)) {
       console.warn(`[Dashboard][WidgetManager] Already mounted "${widgetId}" — skipping duplicate mount`);
@@ -98,79 +100,45 @@ export class WidgetManager {
       return false;
     }
 
-    const leafIdx = originalParent.children.indexOf(leaf);
-    console.debug(`[Dashboard][WidgetManager] "${widgetId}": leaf at idx=${leafIdx}, parent has ${originalParent.children.length} children`);
-
-    // ── Step 1: Insert placeholder at leafIdx (leaf shifts to leafIdx+1) ──
+    // ── Step 1: Create a new WorkspaceTabs container ──
+    // This gives the leaf a proper WorkspaceParent — exactly like a real tab
     const ws = this.app.workspace as any;
-    let placeholder: InternalLeaf;
-    try {
-      placeholder = ws.createLeafInParent(originalParent, leafIdx) as InternalLeaf;
-      console.debug(`[Dashboard][WidgetManager] Placeholder at idx=${originalParent.children.indexOf(placeholder)}, leaf now at idx=${originalParent.children.indexOf(leaf)}`);
-    } catch (err) {
-      console.error(`[Dashboard][WidgetManager] createLeafInParent failed for "${widgetId}":`, err);
-      return false;
-    }
 
-    // ── Step 2: Label the placeholder so user knows where the view went ──
-    try {
-      await placeholder.setViewState({ type: 'empty', state: {} });
-      const viewContent = placeholder.containerEl.querySelector('.view-content') as HTMLElement;
-      if (viewContent) {
-        viewContent.style.cssText = [
-          'display:flex',
-          'align-items:center',
-          'justify-content:center',
-          'flex-direction:column',
-          'gap:8px',
-          'color:var(--text-muted)',
-          'font-size:13px',
-          'text-align:center',
-          'padding:24px',
-        ].join(';');
-        viewContent.innerHTML = `
-          <span style="font-size:28px">📌</span>
-          <strong style="color:var(--text-normal)">${widgetLabel}</strong>
-          <span>Open in Dashboard Canvas</span>
-          <span style="font-size:11px;color:var(--text-faint)">Close the dashboard to return this view here</span>
-        `;
-      }
-      console.debug(`[Dashboard][WidgetManager] Placeholder content set for "${widgetId}"`);
-    } catch (err) {
-      console.warn(`[Dashboard][WidgetManager] Could not set placeholder content for "${widgetId}":`, err);
-      // Non-fatal — placeholder will just be blank
-    }
+    // createLeafBySplit creates a new tab group and returns a leaf inside it
+    // We then move the TAB GROUP's containerEl into our slot, not just the leaf's containerEl
+    const tempLeaf = ws.createLeafBySplit(leaf, 'vertical', false) as InternalLeaf;
+    console.log(`[Dashboard][WidgetManager] tempLeaf created alongside "${widgetId}"`);
 
-    // ── Step 3: Remove the real leaf (placeholder holds the tab slot) ──
-    try {
-      originalParent.removeChild(leaf);
-      originalParent.recomputeChildrenDimensions();
-      originalParent.updateTabDisplay();
-      console.debug(`[Dashboard][WidgetManager] removeChild success for "${widgetId}", placeholder at idx=${originalParent.children.indexOf(placeholder)}`);
-    } catch (err) {
-      console.error(`[Dashboard][WidgetManager] removeChild failed for "${widgetId}":`, err);
-      // Clean up placeholder
-      try { placeholder.detach(); } catch {}
-      return false;
-    }
+    // The tab group (WorkspaceTabs) is the shared parent of both leaf and tempLeaf
+    const tabGroup = leaf.parent as InternalParent;
+    const tabGroupEl = tabGroup.containerEl;
 
-    // ── Step 4: Move leaf's containerEl into the widget slot ──
-    // DO NOT override cssText — Obsidian's leaf uses internal flex layout that positions
-    // the header and view-content. Overriding with position:relative and overflow:auto
-    // destroys that layout and hides the header (where search/settings/refresh live).
-    // Instead, only ensure the leaf fills its slot container.
-    leaf.containerEl.style.width = '100%';
-    leaf.containerEl.style.height = '100%';
-    // Remove any leftover position override from previous attempts
-    leaf.containerEl.style.position = '';
-    leaf.containerEl.style.overflow = '';
-    slotContentEl.appendChild(leaf.containerEl);
-    console.debug(`[Dashboard][WidgetManager] containerEl mounted into slot for "${widgetId}" (leaf header preserved)`);
+    // ── Step 2: Close the temp leaf (we only needed it to create the tab group) ──
+    // Now leaf is alone in the tab group
+    try { tempLeaf.detach(); } catch {}
 
-    // ── Step 5: Store mount record ──
-    this.mounts.set(widgetId, { leaf, originalParent, placeholder });
+    // ── Step 3: Store original parent BEFORE we move the tab group ──
+    const originalTabGroupParent = tabGroupEl.parentElement;
+    const originalTabGroupNext = tabGroupEl.nextSibling;
+    this.mounts.set(widgetId, {
+      leaf,
+      originalParent: originalTabGroupParent as unknown as InternalParent,
+      placeholder: null as any, // not using placeholder in this approach
+      tabGroupEl,
+      originalTabGroupNext,
+    });
 
-    // ── Step 6: Attach ResizeObserver so the view re-renders on slot resize ──
+    // ── Step 4: Move the entire tab group DOM into the slot ──
+    tabGroupEl.style.width = '100%';
+    tabGroupEl.style.height = '100%';
+    tabGroupEl.style.position = 'relative';
+    slotContentEl.appendChild(tabGroupEl);
+
+    console.log(`[Dashboard][WidgetManager] Tab group containerEl mounted for "${widgetId}"`);
+    console.log(`[Dashboard][WidgetManager] view-actions count:`,
+      tabGroupEl.querySelectorAll('.view-action').length);
+
+    // ── Step 5: Attach ResizeObserver so the view re-renders on slot resize ──
     const ro = new ResizeObserver((entries) => {
       for (const entry of entries) {
         console.log(`[Dashboard][WidgetManager] ResizeObserver fired for "${widgetId}", new size:`,
@@ -203,54 +171,27 @@ export class WidgetManager {
   // Restore a leaf back to its original tab slot
   // ─────────────────────────────────────────────
   restoreLeaf(widgetId: string): void {
-    console.debug(`[Dashboard][WidgetManager] restoreLeaf: widgetId="${widgetId}"`);
-
-    // Disconnect ResizeObserver
-    const ro = this.resizeObservers.get(widgetId);
-    if (ro) {
-      ro.disconnect();
-      this.resizeObservers.delete(widgetId);
-      console.log(`[Dashboard][WidgetManager] ResizeObserver disconnected for "${widgetId}"`);
-    }
-
     const record = this.mounts.get(widgetId);
-    if (!record) {
-      console.warn(`[Dashboard][WidgetManager] No mount record for "${widgetId}" — nothing to restore`);
-      return;
-    }
+    if (!record) return;
 
-    const { leaf, originalParent, placeholder } = record;
+    const { leaf, tabGroupEl, originalParent, originalTabGroupNext } = record;
 
-    // Re-read placeholder index dynamically — tabs may have been opened/closed
-    const pidx = originalParent.children.indexOf(placeholder);
-    console.debug(`[Dashboard][WidgetManager] "${widgetId}": placeholder at idx=${pidx}, parent has ${originalParent.children.length} children`);
-
-    if (pidx === -1) {
-      console.warn(`[Dashboard][WidgetManager] Placeholder no longer in parent for "${widgetId}" — using fallback restore`);
-      this._fallbackRestore(leaf, widgetId);
-      this.mounts.delete(widgetId);
-      return;
-    }
-
-    try {
-      // replaceChild(index, newLeaf): replaces placeholder at pidx with real leaf
-      // internally calls placeholder.setParent(null) — orphans placeholder
-      originalParent.replaceChild(pidx, leaf);
-      originalParent.recomputeChildrenDimensions();
-      originalParent.updateTabDisplay();
-
-      // Remove orphaned placeholder DOM (setParent(null) was called but DOM lingers)
-      placeholder.containerEl?.remove();
-
-      // Restore focus without stealing keyboard
-      this.app.workspace.setActiveLeaf(leaf, { focus: false });
-
-      console.debug(`[Dashboard][WidgetManager] restoreLeaf complete for "${widgetId}" at idx=${pidx}`);
-    } catch (err) {
-      console.error(`[Dashboard][WidgetManager] replaceChild failed for "${widgetId}":`, err);
+    if (tabGroupEl && originalParent) {
+      // Re-insert the tab group at its original position
+      (originalParent as unknown as HTMLElement).insertBefore(
+        tabGroupEl,
+        originalTabGroupNext ?? null
+      );
+      console.log(`[Dashboard][WidgetManager] Tab group restored for "${widgetId}"`);
+      // Trigger layout recalculation
+      const ws = this.app.workspace as any;
+      ws.onLayoutChange?.();
+    } else {
       this._fallbackRestore(leaf, widgetId);
     }
 
+    const ro = this.resizeObservers.get(widgetId);
+    if (ro) { ro.disconnect(); this.resizeObservers.delete(widgetId); }
     this.mounts.delete(widgetId);
   }
 
