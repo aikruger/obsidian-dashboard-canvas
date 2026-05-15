@@ -44,11 +44,28 @@ export class WidgetManager {
   // Acquire a leaf for the given widget config
   // ─────────────────────────────────────────────
   async getOrCreateLeaf(config: WidgetConfig): Promise<InternalLeaf | null> {
-    console.debug(`[Dashboard][WidgetManager] getOrCreateLeaf: id="${config.id}" viewType="${config.viewType}"`);
+    console.debug(`[Dashboard][WidgetManager] getOrCreateLeaf: id="${config.id}" viewType="${config.viewType}" filePath="${config.filePath ?? 'n/a'}"`);
 
-    // Already mounted — return existing
+    // Check if this exact viewType (+ filePath for file-based views) is already mounted
+    for (const [mountedId, record] of this.mounts.entries()) {
+      const mountedVs = record.leaf.getViewState();
+      const mountedType = mountedVs.type;
+      const mountedFile = (mountedVs.state as any)?.file as string | undefined;
+
+      const typeMatch = mountedType === config.viewType;
+      const fileMatch = config.filePath
+        ? mountedFile === config.filePath
+        : true;
+
+      if (typeMatch && fileMatch) {
+        console.warn(`[Dashboard][WidgetManager] viewType "${config.viewType}" already mounted as widget "${mountedId}" — returning that leaf`);
+        return record.leaf;
+      }
+    }
+
+    // Already mounted under THIS widget id
     if (this.mounts.has(config.id)) {
-      console.debug(`[Dashboard][WidgetManager] Already mounted "${config.id}", returning existing`);
+      console.log(`[Dashboard][WidgetManager] Returning already-mounted leaf for "${config.id}"`);
       return this.mounts.get(config.id)!.leaf;
     }
 
@@ -87,83 +104,80 @@ export class WidgetManager {
     widgetId: string,
     widgetLabel: string
   ): Promise<boolean> {
-    console.debug(`[Dashboard][WidgetManager] mountLeaf (workspace-native): widgetId="${widgetId}"`);
+    console.log(`[Dashboard][WidgetManager] mountLeaf: widgetId="${widgetId}", viewType="${leaf.getViewState().type}"`);
 
     if (this.mounts.has(widgetId)) {
-      console.warn(`[Dashboard][WidgetManager] Already mounted "${widgetId}" — skipping duplicate mount`);
+      console.warn(`[Dashboard][WidgetManager] Already mounted "${widgetId}" — skipping`);
       return false;
     }
 
-    const originalParent = leaf.parent as InternalParent;
-    if (!originalParent) {
-      console.warn(`[Dashboard][WidgetManager] Leaf for "${widgetId}" has no parent — cannot mount`);
+    const containerEl = leaf.containerEl;
+    if (!containerEl) {
+      console.warn(`[Dashboard][WidgetManager] leaf.containerEl is null for "${widgetId}"`);
       return false;
     }
 
-    // ── Step 1: Create a new WorkspaceTabs container ──
-    // This gives the leaf a proper WorkspaceParent — exactly like a real tab
-    const ws = this.app.workspace as any;
+    // Save the DIRECT DOM parent and next sibling so we can restore later
+    const originalDomParent = containerEl.parentElement;
+    const originalDomNext = containerEl.nextSibling;
 
-    // createLeafBySplit creates a new tab group and returns a leaf inside it
-    // We then move the TAB GROUP's containerEl into our slot, not just the leaf's containerEl
-    const tempLeaf = ws.createLeafBySplit(leaf, 'vertical', false) as InternalLeaf;
-    console.log(`[Dashboard][WidgetManager] tempLeaf created alongside "${widgetId}"`);
-
-    // The tab group (WorkspaceTabs) is the shared parent of both leaf and tempLeaf
-    const tabGroup = leaf.parent as InternalParent;
-    const tabGroupEl = tabGroup.containerEl;
-
-    // ── Step 2: Close the temp leaf (we only needed it to create the tab group) ──
-    // Now leaf is alone in the tab group
-    try { tempLeaf.detach(); } catch {}
-
-    // ── Step 3: Store original parent BEFORE we move the tab group ──
-    const originalTabGroupParent = tabGroupEl.parentElement;
-    const originalTabGroupNext = tabGroupEl.nextSibling;
     this.mounts.set(widgetId, {
       leaf,
-      originalParent: originalTabGroupParent as unknown as InternalParent,
-      placeholder: null as any, // not using placeholder in this approach
-      tabGroupEl,
-      originalTabGroupNext,
+      originalParent: originalDomParent as unknown as InternalParent,
+      placeholder: null as any,
+      tabGroupEl: containerEl,           // reuse field — stores the element we moved
+      originalTabGroupNext: originalDomNext,
     });
 
-    // ── Step 4: Move the entire tab group DOM into the slot ──
-    tabGroupEl.style.width = '100%';
-    tabGroupEl.style.height = '100%';
-    tabGroupEl.style.position = 'relative';
-    slotContentEl.appendChild(tabGroupEl);
+    // Force the containerEl to fill the slot and hide workspace chrome
+    containerEl.style.cssText = `
+      width: 100% !important;
+      height: 100% !important;
+      position: absolute !important;
+      top: 0; left: 0;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    `;
 
-    console.log(`[Dashboard][WidgetManager] Tab group containerEl mounted for "${widgetId}"`);
-    console.log(`[Dashboard][WidgetManager] view-actions count:`,
-      tabGroupEl.querySelectorAll('.view-action').length);
+    // Hide the workspace tab header (the bar that says "Full Calendar" etc.)
+    // — it is the first child of containerEl with class workspace-leaf-content's parent header
+    const tabHeader = containerEl.querySelector('.workspace-tab-header-container, .view-header');
+    if (tabHeader) {
+      (tabHeader as HTMLElement).style.display = 'none';
+      console.log(`[Dashboard][WidgetManager] Tab header hidden for "${widgetId}"`);
+    }
 
-    // ── Step 5: Attach ResizeObserver so the view re-renders on slot resize ──
-    const ro = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        console.log(`[Dashboard][WidgetManager] ResizeObserver fired for "${widgetId}", new size:`,
-          Math.round(entry.contentRect.width), 'x', Math.round(entry.contentRect.height));
-        // Call onResize on the leaf's view directly
-        const view = leaf.view as any;
-        if (typeof view?.onResize === 'function') {
-          try {
-            view.onResize();
-          } catch (err) {
-            console.warn(`[Dashboard][WidgetManager] ResizeObserver: onResize() threw for "${widgetId}":`, err);
-          }
-        }
-        // FullCalendar-specific
-        const cal = view?.calendar ?? view?.fullCalendar ?? view?._calendar ?? view?.fullCalendarStore?.calendar ?? null;
-        if (cal) {
-          try { cal.updateSize?.(); } catch {}
-        }
+    // Move into slot
+    slotContentEl.style.position = 'relative';
+    slotContentEl.style.overflow = 'hidden';
+    slotContentEl.appendChild(containerEl);
+
+    console.log(`[Dashboard][WidgetManager] containerEl moved into slot for "${widgetId}"`);
+
+    // Force layout recalculation on the leaf's view
+    const view = leaf.view as any;
+    if (typeof view?.onResize === 'function') {
+      try { view.onResize(); } catch {}
+    }
+
+    // Attach ResizeObserver so view reflows when widget is resized
+    const ro = new ResizeObserver(() => {
+      console.log(`[Dashboard][WidgetManager] ResizeObserver: resize for "${widgetId}"`);
+      const v = leaf.view as any;
+      if (typeof v?.onResize === 'function') {
+        try { v.onResize(); } catch {}
+      }
+      // FullCalendar-specific updateSize
+      const cal = v?.calendar ?? v?.fullCalendar ?? v?._calendar ?? v?.fullCalendarStore?.calendar ?? null;
+      if (cal && typeof cal.updateSize === 'function') {
+        try { cal.updateSize(); } catch {}
       }
     });
     ro.observe(slotContentEl);
     this.resizeObservers.set(widgetId, ro);
-    console.log(`[Dashboard][WidgetManager] ResizeObserver attached for "${widgetId}"`);
 
-    console.debug(`[Dashboard][WidgetManager] mountLeaf complete for "${widgetId}"`);
+    console.log(`[Dashboard][WidgetManager] mountLeaf complete for "${widgetId}"`);
     return true;
   }
 

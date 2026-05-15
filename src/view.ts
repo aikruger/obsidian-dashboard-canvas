@@ -319,7 +319,7 @@ export class DashboardView extends ItemView {
 
   // ─── ADD ACTIVE VIEW TO DASHBOARD ────────────────────────────────────────
 
-  addActiveViewToDashboard() {
+  async addActiveViewToDashboard() {
     // getActiveLeaf is internal but available
     const activeLeaf = (this.app.workspace as unknown as { getActiveLeaf: () => WorkspaceLeaf | undefined }).getActiveLeaf();
     if (!activeLeaf || activeLeaf === this.leaf) {
@@ -354,8 +354,45 @@ export class DashboardView extends ItemView {
       }
     }
     // Generic plugin view
-    const displayText = activeLeaf.view?.getDisplayText?.() ?? type;
-    this.addWidgetForViewType(type, displayText, null).catch(console.error);
+    const displayText2 = activeLeaf.view?.getDisplayText?.() ?? type;
+    const newConfig: WidgetConfig = {
+      id: `widget-${type}-${Date.now()}`,
+      viewType: type,
+      label: displayText2,
+      filePath: undefined,
+      x: 40 + (this.plugin.settings.widgets.length * 30),
+      y: 40 + (this.plugin.settings.widgets.length * 30),
+      w: 640,
+      h: 480,
+    };
+    const slot = this.canvasEl.createDiv({ cls: 'dashboard-widget-slot' });
+    slot.dataset.widgetId = newConfig.id;
+    this.layoutManager.applyToSlot(slot, newConfig);
+    const tb = slot.createDiv({ cls: 'dashboard-widget-titlebar' });
+    const h = tb.createDiv({ cls: 'dashboard-widget-handle' });
+    h.createEl('span', { text: '⠿', cls: 'dashboard-widget-drag-icon' });
+    tb.createEl('span', { text: newConfig.label, cls: 'dashboard-widget-label' });
+
+    const refreshBtn = tb.createEl('button', { text: '↺', cls: 'dashboard-widget-refresh' });
+    refreshBtn.title = 'Refresh widget';
+    refreshBtn.addEventListener('click', () => {
+      console.log(`[Dashboard][View] Refresh button clicked for widget "${newConfig.id}"`);
+      this.refreshWidget(newConfig.id);
+    });
+
+    const cb = tb.createEl('button', { text: '✕', cls: 'dashboard-widget-close' });
+    cb.addEventListener('click', () => { this.removeWidget(newConfig.id).catch(console.error); });
+    const cf = slot.createDiv({ cls: 'dashboard-widget-content' });
+    const ok = await this.widgetManager.mountLeaf(activeLeaf as any, cf, newConfig.id, newConfig.label);
+    if (ok) {
+      this.plugin.settings.widgets.push(newConfig);
+      await this.plugin.saveSettings();
+      this.layoutManager.attachInteract(slot, newConfig);
+      console.log(`[Dashboard][View] Active view "${type}" added as widget "${newConfig.id}"`);
+    } else {
+      slot.remove();
+      new Notice(`Could not mount view: ${displayText2}`);
+    }
   }
 
   // ─── TOOLBAR ─────────────────────────────────────────────────────────────
@@ -712,25 +749,66 @@ export class DashboardView extends ItemView {
     }
 
     new FilePicker(this.app, async (file: any) => {
-      console.debug(`[Dashboard][View] File picked: "${file.path}" for type="${type}"`);
+      console.log(`[Dashboard][View] File picked: "${file.path}" for type="${type}"`);
+
       const newConfig: WidgetConfig = {
         id: `widget-${type}-${Date.now()}`,
-        viewType: type,
+        viewType: type === 'bases' ? 'bases' : type,
         label: file.basename,
         filePath: file.path,
-        x: 40,
-        y: 40,
+        x: 40 + (this.plugin.settings.widgets.length * 30),
+        y: 40 + (this.plugin.settings.widgets.length * 30),
         w: 640,
         h: 480,
       };
-      this.plugin.settings.widgets.push(newConfig);
-      await this.plugin.saveSettings();
-      // For file-based views, open the file in a new leaf then mount it
-      const leaf = this.app.workspace.getLeaf(false);
-      await leaf.openFile(file);
-      await new Promise(resolve => window.setTimeout(resolve, 100));
-      await this.renderWidget(newConfig);
-      console.debug(`[Dashboard][View] File widget created for "${file.path}"`);
+
+      // Open the file in a NEW leaf in the right sidebar
+      const newLeaf = this.app.workspace.getRightLeaf(false);
+      if (!newLeaf) {
+        console.error('[Dashboard][View] openFilePicker: getRightLeaf returned null');
+        return;
+      }
+      await newLeaf.openFile(file);
+      await new Promise(resolve => window.setTimeout(resolve, 200));
+
+      console.log(`[Dashboard][View] File leaf opened for "${file.path}", mounting directly`);
+
+      // Build the slot DOM first
+      const slot = this.canvasEl.createDiv({ cls: 'dashboard-widget-slot' });
+      slot.dataset.widgetId = newConfig.id;
+      this.layoutManager.applyToSlot(slot, newConfig);
+
+      const titleBar = slot.createDiv({ cls: 'dashboard-widget-titlebar' });
+      const handle = titleBar.createDiv({ cls: 'dashboard-widget-handle' });
+      handle.createEl('span', { text: '⠿', cls: 'dashboard-widget-drag-icon' });
+      titleBar.createEl('span', { text: newConfig.label, cls: 'dashboard-widget-label' });
+
+      const refreshBtn = titleBar.createEl('button', { text: '↺', cls: 'dashboard-widget-refresh' });
+      refreshBtn.title = 'Refresh widget';
+      refreshBtn.addEventListener('click', () => {
+        console.log(`[Dashboard][View] Refresh button clicked for widget "${newConfig.id}"`);
+        this.refreshWidget(newConfig.id);
+      });
+
+      const closeBtn = titleBar.createEl('button', { text: '✕', cls: 'dashboard-widget-close' });
+      closeBtn.addEventListener('click', () => { this.removeWidget(newConfig.id).catch(console.error); });
+
+      const contentFrame = slot.createDiv({ cls: 'dashboard-widget-content' });
+
+      // Mount the leaf we KNOW has this file — bypass getOrCreateLeaf
+      const success = await this.widgetManager.mountLeaf(
+        newLeaf as any, contentFrame, newConfig.id, newConfig.label
+      );
+
+      if (success) {
+        this.plugin.settings.widgets.push(newConfig);
+        await this.plugin.saveSettings();
+        this.layoutManager.attachInteract(slot, newConfig);
+        console.log(`[Dashboard][View] File widget "${newConfig.id}" mounted successfully`);
+      } else {
+        slot.remove();
+        console.error(`[Dashboard][View] mountLeaf failed for "${file.path}"`);
+      }
     }).open();
   }
 
