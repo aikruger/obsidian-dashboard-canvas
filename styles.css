@@ -54,7 +54,7 @@
   position: absolute;
   border: 1px solid var(--background-modifier-border);
   border-radius: 6px;
-  overflow: visible;       /* CHANGE from hidden → visible */
+  overflow: hidden;         /* REVERT to hidden — required for swimlane clipping */
   display: flex;
   flex-direction: column;
   background: var(--background-secondary);
@@ -109,27 +109,49 @@
 
 .dashboard-widget-content {
   flex: 1;
-  overflow: auto;           /* CHANGE to auto so inner scroll works */
+  overflow: auto;
   position: relative;
-  clip-path: inset(0 round 0 0 5px 5px);  /* clips bottom corners only */
-  isolation: isolate;   /* ADD — creates a new stacking context so sticky z-index works */
+  /* REMOVE clip-path entirely — it breaks position:sticky on Tasks swimlane headers */
+  /* REMOVE isolation: isolate — same reason */
 }
 
-/* Tasks plugin swimlane column header */
-.dashboard-widget-content .tasks-group-heading,
-.dashboard-widget-content [data-task-group-heading],
-.dashboard-widget-content .task-list-item-checkbox ~ strong,
-.dashboard-widget-content thead th,
-.dashboard-widget-content .nav-folder-title {
-  z-index: 1 !important;
-  position: relative !important;
+/* Tasks plugin: board-view column headers (swimlane headers) */
+.dashboard-widget-content .tasks-layout-table__column-header,
+.dashboard-widget-content .tasks-query-result__group-heading,
+/* Kanban plugin column headers */
+.dashboard-widget-content .kanban-plugin__lane-title,
+/* Generic fallback for heading rows */
+.dashboard-widget-content thead th {
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 2 !important;
+  background: var(--background-secondary) !important;
 }
 
-/* Ensure FullCalendar's internal scroll container fills the widget */
-.dashboard-widget-content .fc-scroller,
-.dashboard-widget-content .fc-timegrid-body,
-.dashboard-widget-content .fc-timegrid-slots table {
+/* Tasks board view: ensure the horizontal swimlane container scrolls within the widget */
+.dashboard-widget-content .tasks-layout-table,
+.dashboard-widget-content .kanban-plugin__board {
+  overflow-x: auto !important;
+  overflow-y: auto !important;
   height: 100% !important;
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: flex-start !important;
+}
+
+/* Each swim lane column must not shrink */
+.dashboard-widget-content .tasks-layout-table__column,
+.dashboard-widget-content .kanban-plugin__lane {
+  flex-shrink: 0 !important;
+  min-width: 220px !important;
+  overflow-y: auto !important;
+  max-height: 100% !important;
+}
+
+.dashboard-widget-content .fc {
+  height: 100% !important;
+  display: flex;
+  flex-direction: column;
 }
 
 .dashboard-widget-content .fc-view-harness {
@@ -145,7 +167,7 @@
   position: absolute !important;
   top: 0;
   left: 0;
-  overflow: hidden;
+  overflow: auto;
 }
 
 .dashboard-widget-error {

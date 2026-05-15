@@ -170,7 +170,7 @@ export class DashboardView extends ItemView {
       window.setTimeout(() => {
         console.log(`[Dashboard][View] Auto-refresh after mount for "${config.id}"`);
         this.refreshWidget(config.id);
-      }, 300);
+      }, 800);
     } else {
       const reason = !config.filePath
         ? 'No file configured'
@@ -221,7 +221,20 @@ export class DashboardView extends ItemView {
 
     // 2. If it's a FullCalendar view, call calendar.updateSize() directly
     //    FullCalendar stores its instance on view.calendar or view.fullCalendar
-    const calInstance = view?.calendar ?? view?.fullCalendar ?? view?.calendarEl?._calendar;
+    const calInstance =
+      view?.calendar ??
+      view?.fullCalendar ??
+      view?._calendar ??
+      view?.fullCalendarStore?.calendar ??
+      (view?.containerEl ?? (leaf as any).containerEl)?.querySelector('.fc')?._calendar ??
+      null;
+
+    if (calInstance) {
+      console.log(`[Dashboard][View] refreshWidget: FullCalendar instance found on "${widgetId}" via probe`);
+    } else {
+      console.warn(`[Dashboard][View] refreshWidget: FullCalendar instance NOT found for "${widgetId}" — updateSize skipped`);
+    }
+
     if (calInstance && typeof calInstance.updateSize === 'function') {
       try {
         calInstance.updateSize();
@@ -263,7 +276,14 @@ export class DashboardView extends ItemView {
       const rec2 = this.widgetManager.getMounts().get(widgetId);
       if (!rec2) return;
       const view2 = rec2.leaf.view as any;
-      const cal2 = view2?.calendar ?? view2?.fullCalendar ?? view2?.calendarEl?._calendar;
+      const cal2 =
+        view2?.calendar ??
+        view2?.fullCalendar ??
+        view2?._calendar ??
+        view2?.fullCalendarStore?.calendar ??
+        (view2?.containerEl ?? (rec2.leaf as any).containerEl)?.querySelector('.fc')?._calendar ??
+        null;
+
       if (cal2 && typeof cal2.updateSize === 'function') {
         try {
           cal2.updateSize();
