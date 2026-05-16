@@ -1,8 +1,81 @@
-/*
+/* The canvas is the scroll root — widgets are absolutely positioned within it */
+.dc-canvas {
+  position: relative;
+  flex: 1;
+  overflow: auto;
+  background: var(--background-primary);
+}
 
-This CSS file will be included with your plugin, and
-available in the app when your plugin is enabled.
+/* Slots must be absolute — interact.js sets left/top/width/height directly */
+.dc-slot {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+}
 
-If your plugin does not need CSS, delete this file.
+/* The content frame fills the slot below the title bar */
+.dc-slot-content {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+  min-height: 0;   /* Critical — without this, flex children don't shrink */
+}
 
-*/
+/* Force the mounted leaf to fill its new container */
+.dc-slot-content > .workspace-leaf {
+  width: 100% !important;
+  height: 100% !important;
+  position: absolute !important;
+  inset: 0;
+}
+
+.dc-toolbar {
+  display: flex;
+  gap: 8px;
+  padding: 8px;
+  background: var(--background-secondary-alt);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.dc-btn {
+  /* Use obsidian native button styling */
+}
+
+.dc-slot-titlebar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 8px;
+  background: var(--background-secondary-alt);
+  border-bottom: 1px solid var(--background-modifier-border);
+  cursor: grab;
+}
+
+.dc-slot-titlebar:active {
+  cursor: grabbing;
+}
+
+.dc-drag-handle {
+  flex: 1;
+  font-weight: bold;
+}
+
+.dc-slot-close {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.dc-resize-handle {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 16px;
+  height: 16px;
+  cursor: se-resize;
+  background-color: var(--text-muted); /* Visual hint for resize handle */
+}

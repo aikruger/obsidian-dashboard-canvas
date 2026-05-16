@@ -1,99 +1,64 @@
-import {App, Editor, MarkdownView, Modal, Notice, Plugin} from 'obsidian';
-import {DEFAULT_SETTINGS, MyPluginSettings, SampleSettingTab} from "./settings";
+import { App, Plugin, WorkspaceLeaf } from 'obsidian';
+import { DashboardSettings, DEFAULT_SETTINGS } from "./widget-config";
+import { DashboardView, VIEW_TYPE_DASHBOARD } from "./dashboard-view";
 
-// Remember to rename these classes and interfaces!
+export default class DashboardPlugin extends Plugin {
+  settings: DashboardSettings;
 
-export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
+  async onload() {
+    console.log("[Dashboard] Plugin loading");
 
-	async onload() {
-		await this.loadSettings();
+    await this.loadSettings();
 
-		// This creates an icon in the left ribbon.
-		this.addRibbonIcon('dice', 'Sample', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
-		});
+    this.registerView(
+      VIEW_TYPE_DASHBOARD,
+      (leaf) => new DashboardView(leaf, this)
+    );
 
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status bar text');
+    this.addRibbonIcon('layout-dashboard', 'Open Dashboard', () => {
+      this.activateDashboard();
+    });
 
-		// This adds a simple command that can be triggered anywhere
-		this.addCommand({
-			id: 'open-modal-simple',
-			name: 'Open modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
-			}
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'replace-selected',
-			name: 'Replace selected content',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				editor.replaceSelection('Sample editor command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-modal-complex',
-			name: 'Open modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
-					}
+    this.addCommand({
+      id: 'open-dashboard',
+      name: 'Open Dashboard',
+      callback: () => {
+        this.activateDashboard();
+      }
+    });
 
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
-				}
-				return false;
-			}
-		});
+    console.log("[Dashboard] Plugin loaded");
+  }
 
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
+  async activateDashboard() {
+    const { workspace } = this.app;
 
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			new Notice("Click");
-		});
+    const existingLeaves = workspace.getLeavesOfType(VIEW_TYPE_DASHBOARD);
+    if (existingLeaves.length > 0) {
+      console.log("[Dashboard] activateDashboard — existing leaf found");
+      if (existingLeaves[0]) workspace.revealLeaf(existingLeaves[0]);
+      return;
+    }
 
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
+    console.log("[Dashboard] activateDashboard — new leaf created");
+    const leaf = workspace.getLeaf(false);
+    await leaf.setViewState({
+      type: VIEW_TYPE_DASHBOARD,
+      active: true,
+    });
+    workspace.revealLeaf(leaf);
+  }
 
-	}
+  onunload() {
+    console.log("[Dashboard] Plugin unloading");
+    this.app.workspace.detachLeavesOfType(VIEW_TYPE_DASHBOARD);
+  }
 
-	onunload() {
-	}
+  async loadSettings() {
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData() as Partial<DashboardSettings>);
+  }
 
-	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData() as Partial<MyPluginSettings>);
-	}
-
-	async saveSettings() {
-		await this.saveData(this.settings);
-	}
-}
-
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
-	}
-
-	onOpen() {
-		let {contentEl} = this;
-		contentEl.setText('Woah!');
-	}
-
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
-	}
+  async saveSettings() {
+    await this.saveData(this.settings);
+  }
 }
