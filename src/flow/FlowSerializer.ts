@@ -1,8 +1,10 @@
 import { App, WorkspaceLeaf } from "obsidian";
-import { FlowContext, FlowLeafState } from "./FlowContext";
+import { FlowContext, FlowLeafState, FlowSplitState } from "./FlowContext";
 import { FlowWindow } from "./FlowWindow";
 import { getParentRemover, getLeafId } from "./FlowUtils";
 import ObsidianFlowPlugin from "../main";
+import { FlowSplit } from "./FlowSplit";
+import { FlowTabs } from "./FlowTabs";
 
 export class FlowSerializer {
     plugin: ObsidianFlowPlugin;
@@ -29,12 +31,7 @@ export class FlowSerializer {
                 width: window.state.width,
                 height: window.state.height
             },
-            layout: {
-                direction: 'horizontal',
-                ratio: 1,
-                // Flattening serialization for now, but leaving structure ready for recursive splits
-                children: window.rootTabs.leaves.map(leaf => this.serializeLeaf(leaf))
-            },
+            layout: this.serializeSplit(window.rootSplit),
             activeLeafId: window.rootTabs.activeLeaf ? getLeafId(window.rootTabs.activeLeaf) : ''
         };
 
@@ -52,6 +49,36 @@ export class FlowSerializer {
 
         console.log("[obsidian-flow] Context serialised", name);
         return context;
+    }
+
+    serializeSplit(split: FlowSplit): FlowSplitState {
+        return {
+            direction: split.direction,
+            ratio: 1, // Simplified for now
+            children: split.children.map(child => {
+                if (child instanceof FlowSplit) {
+                    return this.serializeSplit(child);
+                } else {
+                    return this.serializeTabs(child);
+                }
+            })
+        };
+    }
+
+    serializeTabs(tabs: FlowTabs): FlowLeafState {
+        // We only serialize the active leaf or the first one for simplicity,
+        // or potentially we should alter the FlowLeafState to support multiple leaves per tab.
+        // For the sake of the specification let's serialize the first leaf or empty state.
+        const leaf = tabs.leaves[0];
+        if (leaf) {
+            return this.serializeLeaf(leaf);
+        }
+        return {
+            id: 'tabs-' + Date.now().toString(),
+            type: 'empty',
+            state: {},
+            eState: undefined
+        };
     }
 
     serializeLeaf(leaf: WorkspaceLeaf): FlowLeafState {
@@ -85,25 +112,74 @@ export class FlowSerializer {
         window.state.height = context.windowBounds.height;
         window.applyStateBounds();
 
-        window.rootTabs.leaves.forEach(l => l.detach());
-        window.rootTabs.leaves = [];
-        window.rootTabs.tabsEl.empty();
-        window.rootTabs.leavesEl.empty();
+        // Clear everything
+        window.contentEl.empty();
 
-        if ('children' in context.layout) {
-            for (const child of context.layout.children) {
-                if ('type' in child) {
-                    await this.restoreLeaf(window, child);
-                }
-            }
-        } else {
-            await this.restoreLeaf(window, context.layout);
+        // Rebuild root split
+        window.rootSplit = new FlowSplit(this.app, this.plugin, window.contentEl, 'horizontal');
+
+        // Since we re-initialized rootSplit, we need to bind the drop events and populate it
+        window.dragController.setupDropZone(); // Not strictly needed to re-run, but we need to re-wire onDrop at least
+
+        window.rootSplit.onDrop = (targetTabs, mode) => {
+            if (!this.plugin.currentDragSession) return;
+            console.log('[obsidian-flow] Edge drop routed to FlowSplit.splitAt', { mode });
+            window.rootSplit.hideAllDropZones();
+
+            const session = this.plugin.currentDragSession;
+            if (!session) return;
+
+            const newTabs = window.rootSplit.splitAt(targetTabs, mode);
+            void window.dragController.applySessionToTabs(session, newTabs);
+        };
+
+        if (context.layout) {
+             await this.restoreSplit(window.rootSplit, context.layout as FlowSplitState);
         }
 
         window.show();
     }
 
-    async restoreLeaf(window: FlowWindow, leafState: FlowLeafState) {
+    async restoreSplit(parentSplit: FlowSplit, state: FlowSplitState) {
+        parentSplit.direction = state.direction || 'horizontal';
+
+        if (state.children) {
+            let first = true;
+            for (const childState of state.children) {
+                if (!first) {
+                    parentSplit.addDivider(parentSplit.children.length - 1);
+                }
+
+                if ('direction' in childState) {
+                    const wrapperEl = document.createElement('div');
+                    wrapperEl.style.flex = '1 1 0%';
+                    wrapperEl.style.display = 'flex';
+                    wrapperEl.style.width = '100%';
+                    wrapperEl.style.height = '100%';
+                    const newSplit = new FlowSplit(this.app, this.plugin, wrapperEl, (childState).direction);
+                    newSplit.onDrop = parentSplit.onDrop;
+                    parentSplit.addSplit(newSplit);
+
+                    await this.restoreSplit(newSplit, childState);
+                } else {
+                    const tabsEl = document.createElement('div');
+                    tabsEl.style.flex = '1 1 0%';
+                    tabsEl.style.display = 'flex';
+                    tabsEl.style.flexDirection = 'column';
+                    const newTabs = new FlowTabs(this.app, this.plugin, tabsEl);
+                    parentSplit.addTabs(newTabs);
+
+                    if (childState.type !== 'empty') {
+                        await this.restoreLeafIntoTabs(newTabs, childState);
+                    }
+                }
+
+                first = false;
+            }
+        }
+    }
+
+    async restoreLeafIntoTabs(tabs: FlowTabs, leafState: FlowLeafState) {
         try {
             const leaf = this.app.workspace.getLeaf('tab');
             await leaf.setViewState({
@@ -120,7 +196,7 @@ export class FlowSerializer {
                 p.removeChild(leaf);
             }
 
-            window.rootTabs.addLeaf(leaf);
+            tabs.addLeaf(leaf);
             console.log("[obsidian-flow] Serialiser: leaf restored", { id: leafState.id, type: leafState.type });
         } catch (error) {
             console.error("[obsidian-flow] Serialiser: restore failed for leaf", { id: leafState.id, error });

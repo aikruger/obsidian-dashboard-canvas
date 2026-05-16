@@ -1,8 +1,10 @@
 import { App, WorkspaceLeaf, Component } from "obsidian";
 import { getLeafContainer } from "./FlowUtils";
+import type ObsidianFlowPlugin from "../main";
 
 export class FlowTabs extends Component {
     app: App;
+    plugin: ObsidianFlowPlugin;
     containerEl: HTMLElement;
     tabsEl: HTMLElement;
     leavesEl: HTMLElement;
@@ -10,9 +12,10 @@ export class FlowTabs extends Component {
     leaves: WorkspaceLeaf[] = [];
     activeLeaf: WorkspaceLeaf | null = null;
 
-    constructor(app: App, containerEl: HTMLElement) {
+    constructor(app: App, plugin: ObsidianFlowPlugin, containerEl: HTMLElement) {
         super();
         this.app = app;
+        this.plugin = plugin;
         this.containerEl = containerEl;
         this.buildUI();
     }
@@ -43,6 +46,26 @@ export class FlowTabs extends Component {
             this.activateLeaf(leaf);
         };
 
+        // Internal dragging support
+        tabEl.draggable = true;
+        tabEl.addEventListener('dragstart', (e) => {
+            e.stopPropagation(); // prevent bubbling
+            console.log('[obsidian-flow] Internal tab drag started', leaf.view?.getViewType());
+
+            if (e.dataTransfer) {
+                e.dataTransfer.setData('obsidian-flow-internal', leaf.view?.getViewType() ?? 'unknown');
+            }
+
+            this.plugin.currentDragSession = {
+                type: leaf.view?.getViewType() ?? '',
+                state: leaf.view?.getState?.() ?? {},
+                eState: leaf.view?.getEphemeralState?.() ?? null,
+                sourceInternal: true,
+                sourceLeaf: leaf,
+                sourceTabs: this
+            };
+        });
+
         const leafContainer = getLeafContainer(leaf);
 
         if (leafContainer) {
@@ -56,6 +79,31 @@ export class FlowTabs extends Component {
         }
 
         this.activateLeaf(leaf);
+    }
+
+    removeLeaf(leaf: WorkspaceLeaf) {
+        const idx = this.leaves.indexOf(leaf);
+        if (idx === -1) {
+            console.warn('[obsidian-flow] FlowTabs.removeLeaf: leaf not found');
+            return;
+        }
+        this.leaves.splice(idx, 1);
+
+        const tabEl = this.tabsEl.children[idx];
+        if (tabEl) this.tabsEl.removeChild(tabEl);
+
+        const lc = getLeafContainer(leaf);
+        if (lc && lc.parentNode === this.leavesEl) {
+            this.leavesEl.removeChild(lc);
+        }
+
+        if (this.leaves.length > 0) {
+            const nextLeaf = this.leaves[Math.max(0, idx - 1)];
+            if (nextLeaf) {
+                this.activateLeaf(nextLeaf);
+            }
+        }
+        console.log('[obsidian-flow] FlowTabs.removeLeaf: removed leaf', leaf.view?.getViewType());
     }
 
     activateLeaf(leaf: WorkspaceLeaf) {

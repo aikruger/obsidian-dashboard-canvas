@@ -33,7 +33,7 @@ export class FlowWindow extends Component {
     };
 
     rootSplit: FlowSplit;
-    rootTabs: FlowTabs; // Maintained reference for serialization shortcut
+    rootTabs: FlowTabs; // Maintained reference for simple serialization
     dragController: FlowDragController;
 
     constructor(app: App, plugin: ObsidianFlowPlugin) {
@@ -103,13 +103,14 @@ export class FlowWindow extends Component {
         this.contentEl.style.flexDirection = 'column';
 
         // Initialize root split container
-        this.rootSplit = new FlowSplit(this.app, this.contentEl, 'horizontal');
+        this.rootSplit = new FlowSplit(this.app, this.plugin, this.contentEl, "horizontal");
+        this.rootSplit.plugin = this.plugin;
 
         const tabsContainer = document.createElement('div');
         tabsContainer.style.flexGrow = '1';
         tabsContainer.style.display = 'flex';
         tabsContainer.style.flexDirection = 'column';
-        this.rootTabs = new FlowTabs(this.app, tabsContainer);
+        this.rootTabs = new FlowTabs(this.app, this.plugin, tabsContainer);
 
         this.rootSplit.addTabs(this.rootTabs);
 
@@ -127,7 +128,7 @@ export class FlowWindow extends Component {
             this.containerEl.style.left = `${this.state.x}px`;
             this.containerEl.style.top = `${this.state.y}px`;
             this.containerEl.style.width = `${this.state.width}px`;
-            this.containerEl.style.height = 'auto'; // Let title bar dictate height
+            this.containerEl.style.height = 'auto';
         } else {
             this.containerEl.style.left = `${this.state.x}px`;
             this.containerEl.style.top = `${this.state.y}px`;
@@ -280,7 +281,6 @@ class SaveContextModal extends Modal {
                 .setCta()
                 .onClick(() => {
                     if (this.existingNames.includes(this.name)) {
-                        // Create secondary confirmation
                         this.close();
                         const confirmModal = new ConfirmOverwriteModal(this.app, this.name, () => {
                             this.onSubmit(this.name, true);

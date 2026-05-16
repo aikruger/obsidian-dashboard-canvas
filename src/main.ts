@@ -13,6 +13,7 @@ export default class ObsidianFlowPlugin extends Plugin {
     commandManager: FlowCommandManager;
 
     currentDragSession: FlowDragSession | null = null;
+    lastDragEvent: DragEvent | null = null;
     leafMap: WeakMap<HTMLElement, WorkspaceLeaf> = new WeakMap();
 
     async onload() {
@@ -56,9 +57,28 @@ export default class ObsidianFlowPlugin extends Plugin {
             }));
 
             this.registerDomEvent(document, 'dragstart', (e: DragEvent) => {
-                const target = e.target as HTMLElement;
-                const tabHeader = target.closest('.workspace-tab-header') as HTMLElement;
-                if (tabHeader) {
+                const target = e.target as HTMLElement | null;
+                if (!target) return;
+
+                const isWorkspaceTabHeader = !!target.closest('.workspace-tab-header');
+                const isFlowTabHeader = !!target.closest('.obsidian-flow-tab');
+
+                if (!isWorkspaceTabHeader && !isFlowTabHeader) {
+                    console.log('[obsidian-flow] dragstart ignored: not a tab header drag', target.className);
+                    this.currentDragSession = null;
+                    return;
+                }
+
+                console.log('[obsidian-flow] dragstart detected on tab header', {
+                    workspace: isWorkspaceTabHeader,
+                    flow: isFlowTabHeader,
+                    target: target.className,
+                });
+
+                this.lastDragEvent = e;
+
+                const tabHeader = isWorkspaceTabHeader ? target.closest('.workspace-tab-header') as HTMLElement : target.closest('.obsidian-flow-tab') as HTMLElement;
+                if (tabHeader && isWorkspaceTabHeader) {
                     const leaf = this.leafMap.get(tabHeader);
                     if (leaf && leaf.view) {
                         this.currentDragSession = {
@@ -68,12 +88,19 @@ export default class ObsidianFlowPlugin extends Plugin {
                             eState: leaf.view.getEphemeralState ? leaf.view.getEphemeralState() : null
                         };
                         console.log("[obsidian-flow] Drag started from main workspace leaf", this.currentDragSession.type);
+                    } else {
+                        this.currentDragSession = null;
+                        console.warn('[obsidian-flow] dragstart: could not resolve leaf from tab header');
                     }
                 }
             });
 
             this.registerDomEvent(document, 'dragend', () => {
-                this.currentDragSession = null;
+                if (this.currentDragSession) {
+                    console.log('[obsidian-flow] dragend: clearing session');
+                    this.currentDragSession = null;
+                }
+                this.lastDragEvent = null;
             });
 
             if (this.settings.openOnStartup) {
