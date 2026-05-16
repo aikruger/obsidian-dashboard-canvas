@@ -3,6 +3,7 @@ import { FlowWindow } from "./FlowWindow";
 import { resolveDraggedLeafFromEvent, getParentRemover, FlowDragSession } from "./FlowUtils";
 import type ObsidianFlowPlugin from "../main";
 import { FlowTabs } from "./FlowTabs";
+import { FlowSplit } from "./FlowSplit";
 
 export class FlowDragController {
     app: App;
@@ -85,6 +86,33 @@ export class FlowDragController {
             const newTabs = this.flowWindow.rootSplit.splitAt(targetTabs, mode);
             void this.applySessionToTabs(session, newTabs);
         };
+    }
+
+    rewireRootSplit(newRootSplit: FlowSplit) {
+        console.log('[obsidian-flow] FlowDragController.rewireRootSplit: re-wiring to new root');
+
+        newRootSplit.onDrop = (targetTabs, mode) => {
+            if (!this.plugin.currentDragSession) {
+                console.log('[obsidian-flow] edge drop ignored: no active drag session');
+                return;
+            }
+            console.log('[obsidian-flow] Edge drop routed to FlowSplit.splitAt after reset', { mode });
+
+            const session = resolveDraggedLeafFromEvent(
+                this.plugin.lastDragEvent,
+                this.plugin.currentDragSession
+            );
+
+            if (!session) {
+                console.warn('[obsidian-flow] No drag session for edge drop after reset');
+                return;
+            }
+
+            const newTabs = newRootSplit.splitAt(targetTabs, mode);
+            void this.applySessionToTabs(session, newTabs);
+        };
+
+        console.log('[obsidian-flow] FlowDragController.rewireRootSplit: complete');
     }
 
     async applyDropSession(e: DragEvent, targetTabs: FlowTabs) {

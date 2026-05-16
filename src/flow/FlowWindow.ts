@@ -33,7 +33,7 @@ export class FlowWindow extends Component {
     };
 
     rootSplit: FlowSplit;
-    rootTabs: FlowTabs; // Maintained reference for simple serialization
+    rootTabs: FlowTabs; // Maintained reference for serialization shortcut
     dragController: FlowDragController;
 
     constructor(app: App, plugin: ObsidianFlowPlugin) {
@@ -87,6 +87,23 @@ export class FlowWindow extends Component {
         const saveBtn = controls.createEl('button', { text: 'Save' });
         saveBtn.onclick = () => this.saveContext();
 
+        const clearBtn = controls.createEl('button', { text: 'Clear' });
+        clearBtn.setAttribute('aria-label', 'Clear all tabs from current view');
+        clearBtn.onclick = () => {
+            console.log('[obsidian-flow] Clear button clicked');
+            this.rootTabs.clearAll();
+        };
+
+        const resetBtn = controls.createEl('button', { text: 'Reset' });
+        resetBtn.setAttribute('aria-label', 'Reset entire window to empty state');
+        resetBtn.onclick = () => {
+            console.log('[obsidian-flow] Reset button clicked');
+            const confirmed = confirm('Reset ObsidianFlow? This will remove all tabs and splits.');
+            if (confirmed) {
+                this.resetWindow();
+            }
+        };
+
         const minBtn = controls.createEl('button', { text: '-' });
         minBtn.onclick = () => this.toggleMinimise();
 
@@ -103,8 +120,7 @@ export class FlowWindow extends Component {
         this.contentEl.style.flexDirection = 'column';
 
         // Initialize root split container
-        this.rootSplit = new FlowSplit(this.app, this.plugin, this.contentEl, "horizontal");
-        this.rootSplit.plugin = this.plugin;
+        this.rootSplit = new FlowSplit(this.app, this.plugin, this.contentEl, 'horizontal');
 
         const tabsContainer = document.createElement('div');
         tabsContainer.style.flexGrow = '1';
@@ -128,7 +144,7 @@ export class FlowWindow extends Component {
             this.containerEl.style.left = `${this.state.x}px`;
             this.containerEl.style.top = `${this.state.y}px`;
             this.containerEl.style.width = `${this.state.width}px`;
-            this.containerEl.style.height = 'auto';
+            this.containerEl.style.height = 'auto'; // Let title bar dictate height
         } else {
             this.containerEl.style.left = `${this.state.x}px`;
             this.containerEl.style.top = `${this.state.y}px`;
@@ -229,6 +245,57 @@ export class FlowWindow extends Component {
             void this.plugin.serializer.serializeContext(this, name, overwrite);
         });
         modal.open();
+    }
+
+    resetWindow() {
+        console.log('[obsidian-flow] FlowWindow.resetWindow: clearing all content');
+
+        // Recursively collect all FlowTabs and clear leaves
+        this.collectAllTabs(this.rootSplit).forEach(tabs => {
+            tabs.clearAll();
+        });
+
+        // Remove all children from rootSplit container
+        while (this.contentEl.firstChild) {
+            this.contentEl.removeChild(this.contentEl.firstChild);
+            console.log('[obsidian-flow] FlowWindow.resetWindow: removed child from contentEl');
+        }
+
+        // Rebuild rootSplit fresh
+        this.rootSplit = new FlowSplit(this.app, this.plugin, this.contentEl, 'horizontal');
+
+        const tabsContainer = document.createElement('div');
+        tabsContainer.style.flexGrow = '1';
+        tabsContainer.style.display = 'flex';
+        tabsContainer.style.flexDirection = 'column';
+        this.rootTabs = new FlowTabs(this.app, this.plugin, tabsContainer);
+        this.rootSplit.addTabs(this.rootTabs);
+
+        // Re-wire the drag controller to the new rootSplit
+        this.dragController.rewireRootSplit(this.rootSplit);
+
+        // Clear active context
+        this.state.activeContextId = null;
+        this.updateTitleBar('ObsidianFlow');
+
+        console.log('[obsidian-flow] FlowWindow.resetWindow: complete, fresh FlowTabs ready');
+    }
+
+    collectAllTabs(split: FlowSplit): FlowTabs[] {
+        const result: FlowTabs[] = [];
+        for (const child of split.children) {
+            if (child instanceof FlowTabs) {
+                result.push(child);
+            } else if (child instanceof FlowSplit) {
+                result.push(...this.collectAllTabs(child));
+            }
+        }
+        return result;
+    }
+
+    updateTitleBar(name: string) {
+        const titleEl = this.titleBarEl.querySelector('.obsidian-flow-title');
+        if (titleEl) { const t = titleEl as unknown as { innerText: string }; t.innerText = name; }
     }
 
     show() {
