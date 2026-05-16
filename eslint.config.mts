@@ -1,34 +1,50 @@
-import tseslint from 'typescript-eslint';
 import obsidianmd from "eslint-plugin-obsidianmd";
-import globals from "globals";
-import { globalIgnores } from "eslint/config";
+import tseslint from "typescript-eslint";
+import js from "@eslint/js";
+
+const rawObsidianConfig = obsidianmd.configs.recommended;
+let obsRules = {};
+if (rawObsidianConfig && Array.isArray(rawObsidianConfig)) {
+  for (const config of rawObsidianConfig) {
+      if (config.rules) {
+          obsRules = { ...obsRules, ...config.rules };
+      }
+  }
+} else if (rawObsidianConfig && rawObsidianConfig.rules) {
+  obsRules = { ...rawObsidianConfig.rules };
+}
+delete obsRules["obsidianmd/commands/no-command-in-command-id"];
 
 export default tseslint.config(
-	{
-		languageOptions: {
-			globals: {
-				...globals.browser,
-			},
-			parserOptions: {
-				projectService: {
-					allowDefaultProject: [
-						'eslint.config.js',
-						'manifest.json'
-					]
-				},
-				tsconfigRootDir: import.meta.dirname,
-				extraFileExtensions: ['.json']
-			},
-		},
-	},
-	...obsidianmd.configs.recommended,
-	globalIgnores([
-		"node_modules",
-		"dist",
-		"esbuild.config.mjs",
-		"eslint.config.js",
-		"version-bump.mjs",
-		"versions.json",
-		"main.js",
-	]),
+  {
+    ignores: [
+      "node_modules/**",
+      "dist/**",
+      "main.js",
+      "versions.json",
+      "esbuild.config.mjs",
+      "version-bump.mjs",
+      "eslint.config.mts"
+    ],
+  },
+  js.configs.recommended,
+  ...tseslint.configs.recommendedTypeChecked,
+  {
+    plugins: {
+      obsidianmd
+    },
+    languageOptions: {
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+    files: ["src/**/*.ts", "main.ts"],
+    rules: {
+      ...obsRules,
+      "obsidianmd/no-static-styles-assignment": "off",
+      "obsidianmd/ui/sentence-case": "off",
+      "no-console": "off",
+    }
+  }
 );
