@@ -113,35 +113,50 @@ export class FlowSerializer {
         window.applyStateBounds();
 
         // Clear everything
-        window.contentEl.empty();
+        window.collectAllTabs(window.rootSplit).forEach(tabs => {
+            tabs.clearAll();
+        });
+
+        while (window.contentEl.firstChild) {
+            window.contentEl.removeChild(window.contentEl.firstChild);
+        }
 
         // Rebuild root split
         window.rootSplit = new FlowSplit(this.app, this.plugin, window.contentEl, 'horizontal');
+        window.dragController.rewireRootSplit(window.rootSplit);
 
-        // Since we re-initialized rootSplit, we need to bind the drop events and populate it
-        window.dragController.setupDropZone(); // Not strictly needed to re-run, but we need to re-wire onDrop at least
-
-        window.rootSplit.onDrop = (targetTabs, mode) => {
-            if (!this.plugin.currentDragSession) return;
-            console.log('[obsidian-flow] Edge drop routed to FlowSplit.splitAt', { mode });
-            window.rootSplit.hideAllDropZones();
-
-            const session = this.plugin.currentDragSession;
-            if (!session) return;
-
-            const newTabs = window.rootSplit.splitAt(targetTabs, mode);
-            void window.dragController.applySessionToTabs(session, newTabs);
-        };
+        // Let restoreSplit populate window.rootSplit, and it will update window.rootTabs to the first tabs encountered
+        let firstTabsFound: FlowTabs | null = null;
 
         if (context.layout) {
-             await this.restoreSplit(window.rootSplit, context.layout as FlowSplitState);
+             firstTabsFound = await this.restoreSplit(window.rootSplit, context.layout as FlowSplitState, window);
         }
+
+        // Make sure we have a rootTabs fallback
+        if (firstTabsFound) {
+            window.rootTabs = firstTabsFound;
+        } else {
+            const tabsContainer = document.createElement('div');
+            tabsContainer.style.flexGrow = '1';
+            tabsContainer.style.display = 'flex';
+            tabsContainer.style.flexDirection = 'column';
+            const newTabs = new FlowTabs(this.app, this.plugin, tabsContainer);
+            window.rootSplit.addTabs(newTabs);
+            window.dragController.wireTabs(newTabs);
+            window.rootTabs = newTabs;
+        }
+
+        window.state.mode = 'use';
+        window.applyMode();
+        window.updateTitleBar(context.name);
 
         window.show();
     }
 
-    async restoreSplit(parentSplit: FlowSplit, state: FlowSplitState) {
+    async restoreSplit(parentSplit: FlowSplit, state: FlowSplitState, window: FlowWindow): Promise<FlowTabs | null> {
         parentSplit.direction = state.direction || 'horizontal';
+
+        let firstTabsFound: FlowTabs | null = null;
 
         if (state.children) {
             let first = true;
@@ -157,10 +172,11 @@ export class FlowSerializer {
                     wrapperEl.style.width = '100%';
                     wrapperEl.style.height = '100%';
                     const newSplit = new FlowSplit(this.app, this.plugin, wrapperEl, (childState).direction);
-                    newSplit.onDrop = parentSplit.onDrop;
                     parentSplit.addSplit(newSplit);
 
-                    await this.restoreSplit(newSplit, childState);
+                    const t = await this.restoreSplit(newSplit, childState, window);
+                    if (t && !firstTabsFound) firstTabsFound = t;
+
                 } else {
                     const tabsEl = document.createElement('div');
                     tabsEl.style.flex = '1 1 0%';
@@ -168,6 +184,10 @@ export class FlowSerializer {
                     tabsEl.style.flexDirection = 'column';
                     const newTabs = new FlowTabs(this.app, this.plugin, tabsEl);
                     parentSplit.addTabs(newTabs);
+
+                    window.dragController.wireTabs(newTabs);
+
+                    if (!firstTabsFound) firstTabsFound = newTabs;
 
                     if (childState.type !== 'empty') {
                         await this.restoreLeafIntoTabs(newTabs, childState);
@@ -177,6 +197,8 @@ export class FlowSerializer {
                 first = false;
             }
         }
+
+        return firstTabsFound;
     }
 
     async restoreLeafIntoTabs(tabs: FlowTabs, leafState: FlowLeafState) {

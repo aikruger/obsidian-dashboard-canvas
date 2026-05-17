@@ -1,4 +1,4 @@
-import { App, Component, Modal, Setting } from "obsidian";
+import { App, Component, Modal, Setting, Notice } from "obsidian";
 import { FlowTabs } from "./FlowTabs";
 import { FlowViewPicker } from "./FlowViewPicker";
 import { FlowDragController } from "./FlowDragController";
@@ -13,6 +13,7 @@ export interface FlowWindowState {
     minimised: boolean;
     maximised: boolean;
     activeContextId: string | null;
+    mode: 'design' | 'use';
 }
 
 export class FlowWindow extends Component {
@@ -22,6 +23,9 @@ export class FlowWindow extends Component {
     titleBarEl: HTMLElement;
     contentEl: HTMLElement;
 
+    modeIndicatorEl: HTMLElement;
+    modeToggleBtn: HTMLButtonElement;
+
     state: FlowWindowState = {
         x: 100,
         y: 100,
@@ -29,11 +33,12 @@ export class FlowWindow extends Component {
         height: 600,
         minimised: false,
         maximised: false,
-        activeContextId: null
+        activeContextId: null,
+        mode: 'design'
     };
 
     rootSplit: FlowSplit;
-    rootTabs: FlowTabs; // Maintained reference for serialization shortcut
+    rootTabs: FlowTabs;
     dragController: FlowDragController;
 
     constructor(app: App, plugin: ObsidianFlowPlugin) {
@@ -45,6 +50,7 @@ export class FlowWindow extends Component {
 
         this.dragController = new FlowDragController(this.app, this, plugin);
         this.dragController.setupDropZone();
+        this.dragController.wireTabs(this.rootTabs);
     }
 
     buildUI() {
@@ -76,13 +82,39 @@ export class FlowWindow extends Component {
         titleText.style.flexGrow = '1';
         titleText.style.fontWeight = 'bold';
 
-        // Controls
         const controls = this.titleBarEl.createDiv('obsidian-flow-controls');
         controls.style.display = 'flex';
         controls.style.gap = '8px';
+        controls.style.alignItems = 'center';
+
+        const modeIndicator = controls.createDiv('obsidian-flow-mode-indicator');
+        modeIndicator.style.fontSize = '11px';
+        modeIndicator.style.padding = '2px 8px';
+        modeIndicator.style.borderRadius = '4px';
+        modeIndicator.style.marginRight = '8px';
+        modeIndicator.style.fontWeight = 'bold';
+        modeIndicator.style.letterSpacing = '0.05em';
+        modeIndicator.style.textTransform = 'uppercase';
+        this.modeIndicatorEl = modeIndicator;
+
+        const modeToggleBtn = controls.createEl('button');
+        modeToggleBtn.setAttribute('aria-label', 'Toggle design / use mode');
+        this.modeToggleBtn = modeToggleBtn;
+        modeToggleBtn.onclick = () => this.toggleMode();
 
         const addTabBtn = controls.createEl('button', { text: '+' });
-        addTabBtn.onclick = () => this.createNewTab();
+        addTabBtn.addClass('obsidian-flow-add-btn');
+        addTabBtn.onclick = () => {
+            if (this.state.mode !== 'design') {
+                console.log('[obsidian-flow] Add pane blocked — not in design mode');
+                new Notice('Switch to Design mode to add panes.');
+                return;
+            }
+            const newTabs = this.rootSplit.splitAt(this.rootTabs, 'split-right');
+            this.dragController.wireTabs(newTabs);
+            this.rootSplit.addDivider(this.rootSplit.children.indexOf(newTabs) - 1);
+            console.log('[obsidian-flow] New pane added in design mode');
+        };
 
         const saveBtn = controls.createEl('button', { text: 'Save' });
         saveBtn.onclick = () => this.saveContext();
@@ -119,7 +151,6 @@ export class FlowWindow extends Component {
         this.contentEl.style.display = 'flex';
         this.contentEl.style.flexDirection = 'column';
 
-        // Initialize root split container
         this.rootSplit = new FlowSplit(this.app, this.plugin, this.contentEl, 'horizontal');
 
         const tabsContainer = document.createElement('div');
@@ -132,6 +163,46 @@ export class FlowWindow extends Component {
 
         this.setupDragging();
         this.setupResizing();
+
+        this.applyMode();
+    }
+
+    applyMode() {
+        const isDesign = this.state.mode === 'design';
+        console.log('[obsidian-flow] FlowWindow.applyMode', this.state.mode);
+
+        this.modeIndicatorEl.innerText = isDesign ? '✏ Design' : '▶ Use';
+        this.modeIndicatorEl.style.backgroundColor = isDesign
+            ? 'var(--color-yellow, #d19900)'
+            : 'var(--color-green, #437a22)';
+        this.modeIndicatorEl.style.color = 'var(--text-on-accent, white)';
+
+        this.modeToggleBtn.innerText = isDesign ? 'Lock Layout' : 'Edit Layout';
+
+        this.collectAllTabs(this.rootSplit).forEach(tabs => tabs.setMode(this.state.mode));
+        this.collectAllSplits(this.rootSplit).forEach(split => split.setMode(this.state.mode));
+
+        const addTabBtn = this.titleBarEl.querySelector('.obsidian-flow-add-btn');
+        if (addTabBtn) {
+            const btn = addTabBtn as HTMLElement;
+            btn.style.display = isDesign ? 'block' : 'none';
+        }
+    }
+
+    toggleMode() {
+        this.state.mode = this.state.mode === 'design' ? 'use' : 'design';
+        console.log('[obsidian-flow] FlowWindow.toggleMode:', this.state.mode);
+        this.applyMode();
+    }
+
+    collectAllSplits(split: FlowSplit): FlowSplit[] {
+        const result: FlowSplit[] = [split];
+        for (const child of split.children) {
+            if (child instanceof FlowSplit) {
+                result.push(...this.collectAllSplits(child));
+            }
+        }
+        return result;
     }
 
     applyStateBounds() {
@@ -242,7 +313,11 @@ export class FlowWindow extends Component {
 
     saveContext() {
         const modal = new SaveContextModal(this.app, this.plugin.settings.flowContexts.map(c => c.name), (name, overwrite) => {
-            void this.plugin.serializer.serializeContext(this, name, overwrite);
+            void this.plugin.serializer.serializeContext(this, name, overwrite).then(() => {
+                this.state.mode = 'use';
+                this.applyMode();
+                console.log('[obsidian-flow] Saved and locked to use mode', name);
+            });
         });
         modal.open();
     }
@@ -250,18 +325,15 @@ export class FlowWindow extends Component {
     resetWindow() {
         console.log('[obsidian-flow] FlowWindow.resetWindow: clearing all content');
 
-        // Recursively collect all FlowTabs and clear leaves
         this.collectAllTabs(this.rootSplit).forEach(tabs => {
             tabs.clearAll();
         });
 
-        // Remove all children from rootSplit container
         while (this.contentEl.firstChild) {
             this.contentEl.removeChild(this.contentEl.firstChild);
             console.log('[obsidian-flow] FlowWindow.resetWindow: removed child from contentEl');
         }
 
-        // Rebuild rootSplit fresh
         this.rootSplit = new FlowSplit(this.app, this.plugin, this.contentEl, 'horizontal');
 
         const tabsContainer = document.createElement('div');
@@ -271,12 +343,14 @@ export class FlowWindow extends Component {
         this.rootTabs = new FlowTabs(this.app, this.plugin, tabsContainer);
         this.rootSplit.addTabs(this.rootTabs);
 
-        // Re-wire the drag controller to the new rootSplit
         this.dragController.rewireRootSplit(this.rootSplit);
+        this.dragController.wireTabs(this.rootTabs);
 
-        // Clear active context
         this.state.activeContextId = null;
         this.updateTitleBar('ObsidianFlow');
+
+        this.state.mode = 'design';
+        this.applyMode();
 
         console.log('[obsidian-flow] FlowWindow.resetWindow: complete, fresh FlowTabs ready');
     }
@@ -295,7 +369,10 @@ export class FlowWindow extends Component {
 
     updateTitleBar(name: string) {
         const titleEl = this.titleBarEl.querySelector('.obsidian-flow-title');
-        if (titleEl) { const t = titleEl as unknown as { innerText: string }; t.innerText = name; }
+        if (titleEl) {
+            const t = titleEl as HTMLElement;
+            t.innerText = name;
+        }
     }
 
     show() {

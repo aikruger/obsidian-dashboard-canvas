@@ -34,34 +34,42 @@ export class FlowDragController {
                 console.log('[obsidian-flow] dragenter ignored: no session (internal plugin drag)');
                 return;
             }
-            console.log('[obsidian-flow] Drag entered FlowWindow content area');
-            this.flowWindow.rootSplit.showAllDropZones();
+            const mode = this.flowWindow.state.mode;
+            console.log('[obsidian-flow] dragenter, mode:', mode);
+
+            if (mode === 'use') {
+                this.flowWindow.collectAllTabs(this.flowWindow.rootSplit)
+                    .forEach(tabs => tabs.showDropZones());
+            }
         });
 
         container.addEventListener('dragleave', (e) => {
             container.style.border = 'none';
             if (!container.contains(e.relatedTarget as Node)) {
-                this.flowWindow.rootSplit.hideAllDropZones();
-                console.log('[obsidian-flow] Drag left FlowWindow content area');
+                this.flowWindow.collectAllTabs(this.flowWindow.rootSplit)
+                    .forEach(tabs => tabs.hideDropZones());
+                console.log('[obsidian-flow] dragleave: hiding all drop zones');
             }
         });
 
         container.addEventListener('drop', (e) => {
             e.preventDefault();
             container.style.border = 'none';
+            this.flowWindow.collectAllTabs(this.flowWindow.rootSplit)
+                .forEach(tabs => tabs.hideDropZones());
 
             if (!this.plugin.currentDragSession) {
-                console.log('[obsidian-flow] drop ignored: no active drag session (internal plugin drag)');
+                console.log('[obsidian-flow] drop ignored: no active session');
                 return;
             }
 
-            this.flowWindow.rootSplit.hideAllDropZones();
-            console.log('[obsidian-flow] Centre drop received in FlowWindow');
-
-            const targetTabs = this.flowWindow.rootSplit.findTabsForDropZone();
-            if (targetTabs) {
-                void this.applyDropSession(e, targetTabs);
+            if (this.flowWindow.state.mode === 'design') {
+                console.log('[obsidian-flow] drop in design mode: ignoring tab content drop on contentEl');
+                return;
             }
+
+            console.log('[obsidian-flow] Centre drop received in use mode');
+            void this.applyDropSession(e, this.flowWindow.rootTabs);
         });
 
         this.flowWindow.rootSplit.onDrop = (targetTabs, mode) => {
@@ -71,7 +79,6 @@ export class FlowDragController {
             }
 
             console.log('[obsidian-flow] Edge drop routed to FlowSplit.splitAt', { mode });
-            this.flowWindow.rootSplit.hideAllDropZones();
 
             const session = resolveDraggedLeafFromEvent(
                 this.plugin.lastDragEvent,
@@ -86,6 +93,32 @@ export class FlowDragController {
             const newTabs = this.flowWindow.rootSplit.splitAt(targetTabs, mode);
             void this.applySessionToTabs(session, newTabs);
         };
+    }
+
+    wireTabs(tabs: FlowTabs) {
+        tabs.onSplitDrop = (targetTabs, mode) => {
+            if (!this.plugin.currentDragSession) return;
+            if (this.flowWindow.state.mode !== 'use') {
+                console.log('[obsidian-flow] split drop blocked — not in use mode');
+                return;
+            }
+            console.log('[obsidian-flow] onSplitDrop fired', mode);
+            const newTabs = this.flowWindow.rootSplit.splitAt(targetTabs, mode);
+            this.wireTabs(newTabs);
+            void this.applySessionToTabs(this.plugin.currentDragSession, newTabs);
+        };
+
+        tabs.onTabDrop = (targetTabs) => {
+            if (!this.plugin.currentDragSession) return;
+            if (this.flowWindow.state.mode !== 'use') {
+                console.log('[obsidian-flow] tab drop blocked — not in use mode');
+                return;
+            }
+            console.log('[obsidian-flow] onTabDrop fired');
+            void this.applySessionToTabs(this.plugin.currentDragSession, targetTabs);
+        };
+
+        console.log('[obsidian-flow] FlowDragController.wireTabs: wired', tabs);
     }
 
     rewireRootSplit(newRootSplit: FlowSplit) {

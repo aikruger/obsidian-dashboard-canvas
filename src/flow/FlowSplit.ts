@@ -12,6 +12,17 @@ export class FlowSplit extends Component {
     direction: 'horizontal' | 'vertical';
     children: (FlowSplit | FlowTabs)[];
     onDrop: SplitDropCallback | null = null;
+    mode: 'design' | 'use' = 'design';
+    dividerEls: HTMLElement[] = [];
+
+    private resizeState = {
+        active: false,
+        dividerIndex: -1,
+        startPos: 0,
+        startSizeA: 0,
+        startSizeB: 0,
+        totalSize: 0
+    };
 
     constructor(app: App, plugin: ObsidianFlowPlugin, containerEl: HTMLElement, direction: 'horizontal' | 'vertical' = 'horizontal') {
         super();
@@ -29,69 +40,23 @@ export class FlowSplit extends Component {
         this.containerEl.style.width = '100%';
         this.containerEl.style.height = '100%';
         this.containerEl.style.position = 'relative';
-
-        this.createDropZones();
     }
 
-    createDropZones() {
-        const edges = ['top', 'bottom', 'left', 'right'];
-        const modeMap: Record<string, DropMode> = {
-            top: 'split-top',
-            bottom: 'split-bottom',
-            left: 'split-left',
-            right: 'split-right',
-        };
+    setMode(mode: 'design' | 'use') {
+        this.mode = mode;
+        console.log('[obsidian-flow] FlowSplit.setMode', mode);
 
-        for (const edge of edges) {
-            const dropZone = this.containerEl.createDiv('obsidian-flow-dropzone-' + edge);
-            dropZone.style.position = 'absolute';
-            dropZone.style.display = 'none';
-            dropZone.style.backgroundColor = 'var(--interactive-accent)';
-            dropZone.style.opacity = '0.3';
-            dropZone.style.zIndex = 'var(--layer-popover)';
+        for (const divider of this.dividerEls) {
+            divider.style.cursor = mode === 'design'
+                ? (this.direction === 'horizontal' ? 'col-resize' : 'row-resize')
+                : 'default';
+            divider.style.pointerEvents = mode === 'design' ? 'auto' : 'none';
+        }
 
-            if (edge === 'top' || edge === 'bottom') {
-                dropZone.style.width = '100%';
-                dropZone.style.height = '30%';
-                dropZone.style.left = '0';
-                if (edge === 'top') dropZone.style.top = '0';
-                else dropZone.style.bottom = '0';
-            } else {
-                dropZone.style.height = '100%';
-                dropZone.style.width = '30%';
-                dropZone.style.top = '0';
-                if (edge === 'left') dropZone.style.left = '0';
-                else dropZone.style.right = '0';
-            }
+        if (mode === 'design') this.hideAllDropZones();
 
-            dropZone.addEventListener('dragover', (e) => {
-                if (!this.plugin?.currentDragSession) return;
-                e.preventDefault();
-                dropZone.style.opacity = '0.6';
-            });
-
-            dropZone.addEventListener('dragleave', () => {
-                dropZone.style.opacity = '0.3';
-            });
-
-            dropZone.addEventListener('drop', (e) => {
-                e.preventDefault();
-                e.stopPropagation(); // prevent bubbling to contentEl global handler
-                dropZone.style.opacity = '0.3';
-
-                const currentMode = modeMap[edge];
-                console.log('[obsidian-flow] FlowSplit edge drop received', { edge, mode: currentMode });
-                if (this.onDrop && currentMode) {
-                    const targetTabs = this.findTabsForDropZone();
-                    if (targetTabs) {
-                        this.onDrop(targetTabs, currentMode);
-                    } else {
-                        console.warn('[obsidian-flow] FlowSplit could not resolve target FlowTabs for edge drop', edge);
-                    }
-                }
-            });
-
-            console.log('[obsidian-flow] FlowSplit.createDropZones: wiring edge', edge);
+        for (const child of this.children) {
+            if (child instanceof FlowSplit) child.setMode(mode);
         }
     }
 
@@ -108,32 +73,17 @@ export class FlowSplit extends Component {
         return null;
     }
 
-    showDropZone(edge: string) {
-        const query = this.containerEl.querySelector('.obsidian-flow-dropzone-' + edge) as HTMLElement;
-        if (query) {
-            query.style.display = 'block';
-        }
-    }
-
-    hideDropZones() {
-        const zones = this.containerEl.querySelectorAll('[class^="obsidian-flow-dropzone-"]');
-        zones.forEach(z => {
-            const zHtml = z as HTMLElement;
-            zHtml.style.display = 'none';
-        });
-    }
-
     showAllDropZones() {
-        ['top','bottom','left','right'].forEach(e => this.showDropZone(e));
         this.children.forEach(c => {
             if (c instanceof FlowSplit) c.showAllDropZones();
+            else if (c instanceof FlowTabs) c.showDropZones();
         });
     }
 
     hideAllDropZones() {
-        this.hideDropZones();
         this.children.forEach(c => {
             if (c instanceof FlowSplit) c.hideAllDropZones();
+            else if (c instanceof FlowTabs) c.hideDropZones();
         });
     }
 
@@ -202,63 +152,118 @@ export class FlowSplit extends Component {
         return newTabs;
     }
 
-    addDivider(afterIndex: number) {
-        const divider = document.createElement('div');
-        divider.addClass('obsidian-flow-split-divider');
-        divider.style.flexShrink = '0';
+    initResizeController() {
+        this.containerEl.addEventListener('mousemove', (e) => {
+            if (!this.resizeState.active) return;
+            const currentPos = this.direction === 'horizontal' ? e.clientX : e.clientY;
+            const delta = currentPos - this.resizeState.startPos;
 
-        if (this.direction === 'horizontal') {
-            divider.style.width = '4px';
-            divider.style.cursor = 'col-resize';
-            divider.style.height = '100%';
-        } else {
-            divider.style.height = '4px';
-            divider.style.cursor = 'row-resize';
-            divider.style.width = '100%';
-        }
-        divider.style.backgroundColor = 'var(--background-modifier-border)';
-        divider.style.zIndex = '10';
+            const idx = this.resizeState.dividerIndex;
+            const childA = this.children[idx];
+            const childB = this.children[idx + 1];
+            if (!childA || !childB) return;
 
-        let dragging = false;
-        let startPos = 0;
+            const elA = childA.containerEl;
+            const elB = childB.containerEl;
+            const total = this.resizeState.totalSize;
+            const newRatio = Math.max(0.1, Math.min(0.9,
+                (this.resizeState.startSizeA + delta) / total
+            ));
 
-        divider.addEventListener('mousedown', (e) => {
-            dragging = true;
-            startPos = this.direction === 'horizontal' ? e.clientX : e.clientY;
-            e.preventDefault();
-            console.log('[obsidian-flow] Divider drag started');
+            elA.style.flex = `0 0 ${newRatio * 100}%`;
+            elB.style.flex = `0 0 ${(1 - newRatio) * 100}%`;
+
+            console.log('[obsidian-flow] Divider resize', { idx, newRatio: newRatio.toFixed(2) });
         });
 
-        document.addEventListener('mousemove', (e) => {
-            if (!dragging) return;
-            const currentPos = this.direction === 'horizontal' ? e.clientX : e.clientY;
-            const delta = currentPos - startPos;
-            startPos = currentPos;
-
-            const childA = this.children[afterIndex];
-            const childB = this.children[afterIndex + 1];
-
-            if (childA && childB) {
-                const elA = childA instanceof FlowTabs ? childA.containerEl : childA.containerEl;
-                const elB = childB instanceof FlowTabs ? childB.containerEl : childB.containerEl;
-                const sizeA = this.direction === 'horizontal' ? elA.offsetWidth : elA.offsetHeight;
-                const sizeB = this.direction === 'horizontal' ? elB.offsetWidth : elB.offsetHeight;
-                const totalSize = sizeA + sizeB;
-
-                if (totalSize > 0) {
-                    const newRatio = Math.max(0.1, Math.min(0.9, (sizeA + delta) / totalSize));
-                    elA.style.flex = `0 0 ${newRatio * 100}%`;
-                    elB.style.flex = `0 0 ${(1 - newRatio) * 100}%`;
-                }
+        this.containerEl.addEventListener('mouseup', () => {
+            if (this.resizeState.active) {
+                this.resizeState.active = false;
+                this.containerEl.style.cursor = '';
+                this.containerEl.style.userSelect = '';
+                console.log('[obsidian-flow] Divider resize ended');
             }
         });
 
         document.addEventListener('mouseup', () => {
-            if (dragging) {
-                dragging = false;
-                console.log('[obsidian-flow] Divider drag ended');
+            if (this.resizeState.active) {
+                this.resizeState.active = false;
+                this.containerEl.style.cursor = '';
+                this.containerEl.style.userSelect = '';
             }
+        }, { once: false });
+    }
+
+    addDivider(afterIndex: number) {
+        if (this.dividerEls.length === 0) {
+            this.initResizeController();
+        }
+
+        const divider = document.createElement('div');
+        divider.addClass('obsidian-flow-split-divider');
+        divider.style.flexShrink = '0';
+        divider.style.position = 'relative';
+        divider.style.zIndex = '5';
+        divider.style.backgroundColor = 'var(--background-modifier-border)';
+
+        if (this.direction === 'horizontal') {
+            divider.style.width = '5px';
+            divider.style.height = '100%';
+            divider.style.cursor = 'col-resize';
+        } else {
+            divider.style.height = '5px';
+            divider.style.width = '100%';
+            divider.style.cursor = 'row-resize';
+        }
+
+        const grip = divider.createDiv('obsidian-flow-divider-grip');
+        grip.style.position = 'absolute';
+        grip.style.top = '50%';
+        grip.style.left = '50%';
+        grip.style.transform = 'translate(-50%, -50%)';
+        grip.style.opacity = '0';
+        grip.style.transition = 'opacity 0.15s';
+        grip.innerText = this.direction === 'horizontal' ? '⋮' : '⋯';
+        grip.style.fontSize = '14px';
+        grip.style.color = 'var(--text-muted)';
+        grip.style.pointerEvents = 'none';
+        divider.addEventListener('mouseenter', () => { grip.style.opacity = '1'; });
+        divider.addEventListener('mouseleave', () => { grip.style.opacity = '0'; });
+
+        divider.addEventListener('mousedown', (e) => {
+            if (this.mode !== 'design') {
+                console.log('[obsidian-flow] Divider resize blocked in use mode');
+                return;
+            }
+            e.preventDefault();
+            e.stopPropagation();
+
+            const childA = this.children[afterIndex];
+            const childB = this.children[afterIndex + 1];
+            if (!childA || !childB) return;
+
+            const sizeA = this.direction === 'horizontal'
+                ? childA.containerEl.offsetWidth
+                : childA.containerEl.offsetHeight;
+            const sizeB = this.direction === 'horizontal'
+                ? childB.containerEl.offsetWidth
+                : childB.containerEl.offsetHeight;
+
+            this.resizeState = {
+                active: true,
+                dividerIndex: afterIndex,
+                startPos: this.direction === 'horizontal' ? e.clientX : e.clientY,
+                startSizeA: sizeA,
+                startSizeB: sizeB,
+                totalSize: sizeA + sizeB,
+            };
+
+            this.containerEl.style.cursor = this.direction === 'horizontal' ? 'col-resize' : 'row-resize';
+            this.containerEl.style.userSelect = 'none';
+            console.log('[obsidian-flow] Divider resize started', { afterIndex, sizeA, sizeB });
         });
+
+        this.dividerEls.push(divider);
 
         const nextChild = this.children[afterIndex + 1];
         if (nextChild) {
