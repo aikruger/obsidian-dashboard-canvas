@@ -38,7 +38,7 @@ export class FlowWindow extends Component {
     };
 
     rootSplit: FlowSplit;
-    rootTabs: FlowTabs;
+    rootTabs: FlowTabs; // Maintained reference for serialization shortcut
     dragController: FlowDragController;
 
     constructor(app: App, plugin: ObsidianFlowPlugin) {
@@ -82,6 +82,7 @@ export class FlowWindow extends Component {
         titleText.style.flexGrow = '1';
         titleText.style.fontWeight = 'bold';
 
+        // Controls
         const controls = this.titleBarEl.createDiv('obsidian-flow-controls');
         controls.style.display = 'flex';
         controls.style.gap = '8px';
@@ -151,6 +152,7 @@ export class FlowWindow extends Component {
         this.contentEl.style.display = 'flex';
         this.contentEl.style.flexDirection = 'column';
 
+        // Initialize root split container
         this.rootSplit = new FlowSplit(this.app, this.plugin, this.contentEl, 'horizontal');
 
         const tabsContainer = document.createElement('div');
@@ -325,15 +327,18 @@ export class FlowWindow extends Component {
     resetWindow() {
         console.log('[obsidian-flow] FlowWindow.resetWindow: clearing all content');
 
+        // Recursively collect all FlowTabs and clear leaves
         this.collectAllTabs(this.rootSplit).forEach(tabs => {
             tabs.clearAll();
         });
 
+        // Remove all children from rootSplit container
         while (this.contentEl.firstChild) {
             this.contentEl.removeChild(this.contentEl.firstChild);
             console.log('[obsidian-flow] FlowWindow.resetWindow: removed child from contentEl');
         }
 
+        // Rebuild rootSplit fresh
         this.rootSplit = new FlowSplit(this.app, this.plugin, this.contentEl, 'horizontal');
 
         const tabsContainer = document.createElement('div');
@@ -343,9 +348,11 @@ export class FlowWindow extends Component {
         this.rootTabs = new FlowTabs(this.app, this.plugin, tabsContainer);
         this.rootSplit.addTabs(this.rootTabs);
 
+        // Re-wire the drag controller to the new rootSplit
         this.dragController.rewireRootSplit(this.rootSplit);
         this.dragController.wireTabs(this.rootTabs);
 
+        // Clear active context
         this.state.activeContextId = null;
         this.updateTitleBar('ObsidianFlow');
 

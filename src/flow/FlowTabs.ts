@@ -27,8 +27,8 @@ export class FlowTabs extends Component {
         this.plugin = plugin;
         this.containerEl = containerEl;
         this.buildUI();
-        this.buildDropZones();
         this.showEmptyState();
+        this.buildDropZones();
         this.setMode('design');
     }
 
@@ -293,7 +293,7 @@ export class FlowTabs extends Component {
                 eState: leaf.view?.getEphemeralState?.() ?? null,
                 sourceInternal: true,
                 sourceLeaf: leaf,
-                sourceTabs: this
+                sourceTabs: this, leaf: leaf
             };
         });
 

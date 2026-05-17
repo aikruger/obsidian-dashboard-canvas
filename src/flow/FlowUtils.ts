@@ -2,13 +2,13 @@ import { WorkspaceLeaf, App } from "obsidian";
 import type { FlowTabs } from "./FlowTabs";
 
 export interface FlowDragSession {
+    leaf: WorkspaceLeaf;
     type: string;
     state: Record<string, unknown>;
     eState: Record<string, unknown> | null;
     sourceInternal?: boolean;
     sourceLeaf?: WorkspaceLeaf;
-    sourceTabs?: FlowTabs;
-    leaf?: WorkspaceLeaf;
+    sourceTabs?: FlowTabs | null;
 }
 
 export function resolveDraggedLeafFromEvent(event: DragEvent | null, currentDragSession: FlowDragSession | null): FlowDragSession | null {
