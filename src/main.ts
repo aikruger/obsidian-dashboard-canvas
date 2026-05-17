@@ -1,99 +1,146 @@
-import {App, Editor, MarkdownView, Modal, Notice, Plugin} from 'obsidian';
-import {DEFAULT_SETTINGS, MyPluginSettings, SampleSettingTab} from "./settings";
+import { Plugin, WorkspaceLeaf } from 'obsidian';
+import { FlowWindow } from './flow/FlowWindow';
+import { DEFAULT_SETTINGS, ObsidianFlowSettings } from './flow/FlowContext';
+import { FlowSerializer } from './flow/FlowSerializer';
+import { FlowCommandManager } from './flow/FlowCommandManager';
+import { FlowSettingsTab } from './flow/FlowSettingsTab';
+import { FlowDragSession } from './flow/FlowUtils';
 
-// Remember to rename these classes and interfaces!
+export default class ObsidianFlowPlugin extends Plugin {
+    settings: ObsidianFlowSettings;
+    flowWindow: FlowWindow;
+    serializer: FlowSerializer;
+    commandManager: FlowCommandManager;
 
-export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
+    currentDragSession: FlowDragSession | null = null;
+    lastDragEvent: DragEvent | null = null;
+    leafMap: WeakMap<HTMLElement, WorkspaceLeaf> = new WeakMap();
 
-	async onload() {
-		await this.loadSettings();
+    async onload() {
+        console.log("Loading ObsidianFlow Plugin");
 
-		// This creates an icon in the left ribbon.
-		this.addRibbonIcon('dice', 'Sample', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
-		});
+        await this.loadSettings();
 
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status bar text');
+        this.flowWindow = new FlowWindow(this.app, this);
+        this.serializer = new FlowSerializer(this);
+        this.commandManager = new FlowCommandManager(this);
 
-		// This adds a simple command that can be triggered anywhere
-		this.addCommand({
-			id: 'open-modal-simple',
-			name: 'Open modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
-			}
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'replace-selected',
-			name: 'Replace selected content',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				editor.replaceSelection('Sample editor command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-modal-complex',
-			name: 'Open modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
-					}
+        this.commandManager.registerCommandsForContexts();
 
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
-				}
-				return false;
-			}
-		});
+        this.addSettingTab(new FlowSettingsTab(this.app, this));
 
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
+        this.addRibbonIcon('layout-dashboard', 'ObsidianFlow', () => {
+            if (this.flowWindow.containerEl.parentNode && this.flowWindow.containerEl.style.display !== 'none') {
+                this.flowWindow.hide();
+            } else {
+                this.flowWindow.show();
+            }
+        });
 
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			new Notice("Click");
-		});
+        this.addCommand({
+            id: 'toggle-flow-window',
+            name: 'Toggle Flow Window',
+            callback: () => {
+                if (this.flowWindow.containerEl.parentNode && this.flowWindow.containerEl.style.display !== 'none') {
+                    this.flowWindow.hide();
+                } else {
+                    this.flowWindow.show();
+                }
+            }
+        });
 
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
+        this.app.workspace.onLayoutReady(() => {
+            this.buildLeafMap();
 
-	}
+            this.registerEvent(this.app.workspace.on('layout-change', () => {
+                this.buildLeafMap();
+            }));
 
-	onunload() {
-	}
+            this.registerDomEvent(document, 'dragstart', (e: DragEvent) => {
+                const target = e.target as HTMLElement | null;
+                if (!target) return;
 
-	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData() as Partial<MyPluginSettings>);
-	}
+                const isWorkspaceTabHeader = !!target.closest('.workspace-tab-header');
+                const isFlowTabHeader = !!target.closest('.obsidian-flow-tab');
 
-	async saveSettings() {
-		await this.saveData(this.settings);
-	}
-}
+                if (!isWorkspaceTabHeader && !isFlowTabHeader) {
+                    console.log('[obsidian-flow] dragstart ignored: not a tab header drag', target.className);
+                    this.currentDragSession = null;
+                    return;
+                }
 
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
-	}
+                console.log('[obsidian-flow] dragstart detected on tab header', {
+                    workspace: isWorkspaceTabHeader,
+                    flow: isFlowTabHeader,
+                    target: target.className,
+                });
 
-	onOpen() {
-		let {contentEl} = this;
-		contentEl.setText('Woah!');
-	}
+                this.lastDragEvent = e;
 
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
-	}
+                const tabHeader = isWorkspaceTabHeader ? target.closest('.workspace-tab-header') as HTMLElement : target.closest('.obsidian-flow-tab') as HTMLElement;
+                if (tabHeader && isWorkspaceTabHeader) {
+                    const leaf = this.leafMap.get(tabHeader);
+                    if (leaf && leaf.view) {
+                        this.currentDragSession = {
+                            leaf,
+                            type: leaf.view.getViewType(),
+                            state: leaf.view.getState(),
+                            eState: leaf.view.getEphemeralState ? leaf.view.getEphemeralState() : null
+                        };
+                        console.log("[obsidian-flow] Drag started from main workspace leaf", this.currentDragSession.type);
+                    } else {
+                        this.currentDragSession = null;
+                        console.warn('[obsidian-flow] dragstart: could not resolve leaf from tab header');
+                    }
+                }
+            });
+
+            this.registerDomEvent(document, 'dragend', () => {
+                if (this.currentDragSession) {
+                    console.log('[obsidian-flow] dragend: clearing session');
+                    this.currentDragSession = null;
+                }
+                this.lastDragEvent = null;
+            });
+
+            if (this.settings.openOnStartup) {
+                let contextToRestore = this.settings.defaultContextId;
+                if (this.settings.rememberLastContext && this.settings.flowContexts && this.settings.flowContexts.length > 0) {
+                    const sorted = [...this.settings.flowContexts].sort((a, b) => b.updatedAt - a.updatedAt);
+                    const first = sorted[0];
+                    if (first) {
+                        contextToRestore = first.id;
+                    }
+                }
+
+                if (contextToRestore) {
+                    void this.serializer.restoreContext(this.flowWindow, contextToRestore);
+                }
+            }
+        });
+    }
+
+    buildLeafMap() {
+        this.app.workspace.iterateAllLeaves((leaf) => {
+            const leafAny = leaf as unknown as { tabHeaderEl: HTMLElement };
+            if (leafAny.tabHeaderEl) {
+                this.leafMap.set(leafAny.tabHeaderEl, leaf);
+            }
+        });
+    }
+
+    onunload() {
+        console.log("Unloading ObsidianFlow Plugin");
+        if (this.flowWindow) {
+            this.flowWindow.unload();
+        }
+    }
+
+    async loadSettings() {
+        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData() as Partial<ObsidianFlowSettings>);
+    }
+
+    async saveSettings() {
+        await this.saveData(this.settings);
+    }
 }
